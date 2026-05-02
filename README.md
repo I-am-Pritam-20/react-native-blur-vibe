@@ -5,8 +5,8 @@ A modern, actively maintained blur view for React Native. Works on **iOS** and *
 > The key difference from other blur libraries: `overlayColor` works on **both iOS and Android** — letting you control blur visibility the same way CSS `backdrop-filter` + `background-color` works on the web.
  
 [![npm version](https://img.shields.io/npm/v/react-native-blur-vibe)](https://www.npmjs.com/package/react-native-blur-vibe)
-[![Build iOS](https://github.com/your-username/react-native-blur-vibe/actions/workflows/build-ios.yml/badge.svg)](https://github.com/your-username/react-native-blur-vibe/actions/workflows/build-ios.yml)
-[![Build Android](https://github.com/your-username/react-native-blur-vibe/actions/workflows/build-android.yml/badge.svg)](https://github.com/your-username/react-native-blur-vibe/actions/workflows/build-android.yml)
+[![Build iOS](https://github.com/I-am-Pritam-20/react-native-blur-vibe/actions/workflows/build-ios.yml/badge.svg)](https://github.com/your-username/react-native-blur-vibe/actions/workflows/build-ios.yml)
+[![Build Android](https://github.com/I-am-Pritam-20/react-native-blur-vibe/actions/workflows/build-android.yml/badge.svg)](https://github.com/your-username/react-native-blur-vibe/actions/workflows/build-android.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
  
 ---
