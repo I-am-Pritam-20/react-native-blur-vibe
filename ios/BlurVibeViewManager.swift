@@ -1,5 +1,11 @@
 import Foundation
 
+/**
+ * BlurVibeViewManager
+ *
+ * RCTViewManager subclass — registers BlurVibeView with React Native.
+ * requiresMainQueueSetup = true because we create UIKit views.
+ */
 @objc(BlurVibeViewManager)
 class BlurVibeViewManager: RCTViewManager {
 
@@ -9,9 +15,5 @@ class BlurVibeViewManager: RCTViewManager {
 
   override static func requiresMainQueueSetup() -> Bool {
     return true
-  }
-
-  @objc override func constantsToExport() -> [AnyHashable: Any]! {
-    return [:]
   }
 }

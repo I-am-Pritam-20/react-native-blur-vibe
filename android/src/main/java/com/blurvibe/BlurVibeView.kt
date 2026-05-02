@@ -17,16 +17,19 @@ import android.view.ViewGroup
 import android.widget.FrameLayout
 
 /**
- * BlurVibeView — Android implementation
+ * BlurVibeView
  *
- * API 31+  : RenderEffect (hardware accelerated)
- * API 24-30: RenderScript (built-in SDK, no extra dep)
+ * Extends FrameLayout — required because:
+ *   1. We host children (overlay view + React children)
+ *   2. ViewGroupManager (used in manager) requires a ViewGroup subclass
+ *   3. SimpleViewManager cast to IViewGroupManager would crash
  *
- * Color props (overlayColor, reducedTransparencyFallbackColor) are
- * received as hex strings from JS and parsed manually here.
- * This gives full control over alpha channel handling.
+ * Blur strategy:
+ *   API 31+  → RenderEffect (hardware accelerated, no bitmap)
+ *   API 24-30 → RenderScript (bitmap-based, built into Android SDK)
  *
- * Supports: "#RGB" "#RRGGBB" "#RRGGBBAA" "transparent"
+ * Color props received as hex strings from JS, parsed manually.
+ * Supports: "transparent", "#RGB", "#RRGGBB", "#RRGGBBAA"
  */
 @SuppressLint("NewApi")
 class BlurVibeView(context: Context) : FrameLayout(context) {
@@ -38,33 +41,58 @@ class BlurVibeView(context: Context) : FrameLayout(context) {
   private var blurRadiusDownscale: Int = 4
 
   init {
-    setWillNotDraw(false)
-    overlayView.layoutParams = LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT)
+    // overlayView fills entire frame, sits above blur, below React children
+    overlayView.layoutParams = LayoutParams(
+      LayoutParams.MATCH_PARENT,
+      LayoutParams.MATCH_PARENT
+    )
     overlayView.isClickable = false
     overlayView.isFocusable = false
-    addView(overlayView)
-    applyBlur()
+    // Add overlay as first child — React children added later will be on top
+    super.addView(overlayView, 0)
   }
 
-  // MARK: - Public setters (called by ViewManager)
+  // MARK: - React child management
+  // Must override to ensure React children go ABOVE our overlay view
+
+  override fun addView(child: View, index: Int) {
+    if (child === overlayView) {
+      super.addView(child, index)
+      return
+    }
+    // React children always go on top of overlay
+    super.addView(child, childCount)
+  }
+
+  override fun addView(child: View) {
+    if (child === overlayView) {
+      super.addView(child)
+      return
+    }
+    super.addView(child, childCount)
+  }
+
+  // MARK: - Setters (called by BlurVibeViewManager)
 
   fun setBlurAmount(amount: Float) {
     blurAmountValue = amount.coerceIn(0f, 100f)
     applyBlur()
   }
 
-  fun setOverlayColor(colorString: String) {
-    overlayColorValue = parseHexColor(colorString) ?: Color.TRANSPARENT
-    updateOverlay()
+  fun setOverlayColor(colorString: String?) {
+    overlayColorValue = parseHexColor(colorString ?: "transparent") ?: Color.TRANSPARENT
+    overlayView.setBackgroundColor(overlayColorValue)
   }
 
-  fun setReducedTransparencyFallbackColor(colorString: String) {
-    fallbackColorValue = parseHexColor(colorString) ?: Color.parseColor("#F2F2F2")
+  fun setReducedTransparencyFallbackColor(colorString: String?) {
+    fallbackColorValue = parseHexColor(colorString ?: "#F2F2F2") ?: Color.parseColor("#F2F2F2")
   }
 
   fun setBlurRadius(radius: Int) {
     blurRadiusDownscale = radius.coerceIn(1, 8)
-    applyBlur()
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
+      post { renderScriptBlur() }
+    }
   }
 
   // MARK: - Blur
@@ -75,7 +103,6 @@ class BlurVibeView(context: Context) : FrameLayout(context) {
     } else {
       post { renderScriptBlur() }
     }
-    updateOverlay()
   }
 
   private fun applyRenderEffect() {
@@ -117,17 +144,6 @@ class BlurVibeView(context: Context) : FrameLayout(context) {
     }
   }
 
-  // MARK: - Overlay
-
-  private fun updateOverlay() {
-    overlayView.setBackgroundColor(overlayColorValue)
-    bringChildToFront(overlayView)
-    for (i in 0 until childCount) {
-      val child = getChildAt(i)
-      if (child !== overlayView) bringChildToFront(child)
-    }
-  }
-
   override fun onLayout(changed: Boolean, l: Int, t: Int, r: Int, b: Int) {
     super.onLayout(changed, l, t, r, b)
     if (changed && Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
@@ -135,36 +151,33 @@ class BlurVibeView(context: Context) : FrameLayout(context) {
     }
   }
 
-  // MARK: - Color parser
+  // MARK: - Hex color parser
   // Supports: "transparent", "#RGB", "#RRGGBB", "#RRGGBBAA"
-  // Returns null if unparseable (caller uses fallback)
   private fun parseHexColor(colorString: String): Int? {
     val s = colorString.trim()
     if (s.equals("transparent", ignoreCase = true)) return Color.TRANSPARENT
     if (!s.startsWith("#")) return null
-
     val hex = s.removePrefix("#")
     return try {
       when (hex.length) {
-        3 -> { // #RGB → #RRGGBB
-          val r = hex[0].toString().repeat(2).toInt(16)
-          val g = hex[1].toString().repeat(2).toInt(16)
-          val b = hex[2].toString().repeat(2).toInt(16)
-          Color.argb(255, r, g, b)
-        }
-        6 -> { // #RRGGBB
-          val r = hex.substring(0, 2).toInt(16)
-          val g = hex.substring(2, 4).toInt(16)
-          val b = hex.substring(4, 6).toInt(16)
-          Color.argb(255, r, g, b)
-        }
-        8 -> { // #RRGGBBAA — note: AA is alpha, last two digits
-          val r = hex.substring(0, 2).toInt(16)
-          val g = hex.substring(2, 4).toInt(16)
-          val b = hex.substring(4, 6).toInt(16)
-          val a = hex.substring(6, 8).toInt(16)
-          Color.argb(a, r, g, b)
-        }
+        3 -> Color.argb(
+          255,
+          hex[0].toString().repeat(2).toInt(16),
+          hex[1].toString().repeat(2).toInt(16),
+          hex[2].toString().repeat(2).toInt(16)
+        )
+        6 -> Color.argb(
+          255,
+          hex.substring(0, 2).toInt(16),
+          hex.substring(2, 4).toInt(16),
+          hex.substring(4, 6).toInt(16)
+        )
+        8 -> Color.argb(
+          hex.substring(6, 8).toInt(16), // alpha last in #RRGGBBAA
+          hex.substring(0, 2).toInt(16),
+          hex.substring(2, 4).toInt(16),
+          hex.substring(4, 6).toInt(16)
+        )
         else -> null
       }
     } catch (e: NumberFormatException) {
