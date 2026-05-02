@@ -36,10 +36,6 @@ android {
   defaultConfig {
     minSdkVersion getExtOrDefault("minSdkVersion")
     targetSdkVersion getExtOrDefault("targetSdkVersion")
-
-    // Required for RenderScript fallback (API 21-30)
-    renderscriptTargetApi 21
-    renderscriptSupportModeEnabled true
   }
 
   buildFeatures {
@@ -63,14 +59,10 @@ android {
 
   kotlinOptions {
     jvmTarget = "17"
-    // Suppress deprecation warnings as errors for RenderScript (deprecated in API 31)
     freeCompilerArgs += ["-nowarn"]
   }
 }
 
 dependencies {
   implementation "com.facebook.react:react-android"
-
-  // RenderScript support library for API 21-30 blur fallback
-  implementation 'androidx.renderscript:renderscript:1.0.0-alpha05'
 }

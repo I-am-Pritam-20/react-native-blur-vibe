@@ -1,5 +1,6 @@
 package com.blurvibe
 
+import android.annotation.SuppressLint
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Canvas
@@ -7,24 +8,24 @@ import android.graphics.Color
 import android.graphics.RenderEffect
 import android.graphics.Shader
 import android.os.Build
+import android.renderscript.Allocation
+import android.renderscript.Element
+import android.renderscript.RenderScript
+import android.renderscript.ScriptIntrinsicBlur
 import android.view.View
 import android.view.ViewGroup
 import android.widget.FrameLayout
-import androidx.renderscript.Allocation
-import androidx.renderscript.Element
-import androidx.renderscript.RenderScript
-import androidx.renderscript.ScriptIntrinsicBlur
 
 /**
  * BlurVibeView — Android implementation
  *
- * API 31+ : RenderEffect (hardware accelerated, most performant)
- * API 24-30: RenderScript via androidx (bitmap-based fallback)
+ * API 31+ : RenderEffect (hardware accelerated)
+ * API 24-30: RenderScript (built into Android SDK, no extra dep needed)
  *
- * overlayColor is composited ON TOP of blur — same concept as CSS:
+ * overlayColor sits on top of blur — like CSS:
  *   backdrop-filter: blur(Xpx) + background-color: overlayColor
- * Alpha of overlayColor controls how much blur is visible.
  */
+@SuppressLint("NewApi")
 class BlurVibeView(context: Context) : FrameLayout(context) {
 
   private val overlayView = View(context)
@@ -35,8 +36,7 @@ class BlurVibeView(context: Context) : FrameLayout(context) {
 
   init {
     setWillNotDraw(false)
-    val lp = LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT)
-    overlayView.layoutParams = lp
+    overlayView.layoutParams = LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT)
     overlayView.isClickable = false
     overlayView.isFocusable = false
     addView(overlayView)
@@ -71,20 +71,19 @@ class BlurVibeView(context: Context) : FrameLayout(context) {
     updateOverlay()
   }
 
-  /** Android 12+ — hardware accelerated, zero bitmap copy */
   private fun applyRenderEffect() {
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
       val sigma = (blurAmountValue * 0.5f).coerceAtLeast(0.01f)
-      val effect = RenderEffect.createBlurEffect(sigma, sigma, Shader.TileMode.MIRROR)
-      setRenderEffect(effect)
+      setRenderEffect(
+        RenderEffect.createBlurEffect(sigma, sigma, Shader.TileMode.MIRROR)
+      )
     }
   }
 
-  /** API 24-30 — androidx RenderScript bitmap blur */
+  @Suppress("DEPRECATION")
   private fun renderScriptBlur() {
     val parentView = parent as? ViewGroup ?: return
     if (width <= 0 || height <= 0) return
-
     try {
       val scaledW = (width / blurRadiusDownscale).coerceAtLeast(1)
       val scaledH = (height / blurRadiusDownscale).coerceAtLeast(1)
@@ -98,8 +97,8 @@ class BlurVibeView(context: Context) : FrameLayout(context) {
       val input = Allocation.createFromBitmap(rs, bitmap)
       val output = Allocation.createTyped(rs, input.type)
       val script = ScriptIntrinsicBlur.create(rs, Element.U8_4(rs))
-      val blurSigma = (blurAmountValue / 100f * 25f).coerceIn(1f, 25f)
-      script.setRadius(blurSigma)
+      val sigma = (blurAmountValue / 100f * 25f).coerceIn(1f, 25f)
+      script.setRadius(sigma)
       script.setInput(input)
       script.forEach(output)
       output.copyTo(bitmap)
