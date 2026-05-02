@@ -1,9 +1,7 @@
 package com.blurvibe
 
-import android.graphics.Color
 import com.facebook.react.uimanager.SimpleViewManager
 import com.facebook.react.uimanager.ThemedReactContext
-import com.facebook.react.uimanager.ViewManagerDelegate
 import com.facebook.react.uimanager.annotations.ReactProp
 
 class BlurVibeViewManager : SimpleViewManager<BlurVibeView>() {
@@ -17,10 +15,9 @@ class BlurVibeViewManager : SimpleViewManager<BlurVibeView>() {
     view.setBlurAmount(amount)
   }
 
-  // blurType is iOS-specific but we accept it gracefully on Android (no-op)
   @ReactProp(name = "blurType")
   fun setBlurType(view: BlurVibeView, type: String?) {
-    // No-op on Android — blur type is iOS UIBlurEffect specific
+    // No-op on Android — blurType is iOS UIBlurEffectStyle only
   }
 
   @ReactProp(name = "overlayColor")
@@ -37,6 +34,4 @@ class BlurVibeViewManager : SimpleViewManager<BlurVibeView>() {
   fun setBlurRadius(view: BlurVibeView, radius: Int) {
     view.setBlurRadius(radius)
   }
-
-  override fun needsCustomLayoutForChildren() = true
 }
