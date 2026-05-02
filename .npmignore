@@ -1,0 +1,43 @@
+# Development and tooling
+.github/
+.vscode/
+.idea/
+__tests__/
+__mocks__/
+__fixtures__/
+
+# Example app — on GitHub only, never on npm
+example/
+
+# Build artifacts and deps
+node_modules/
+android/build/
+ios/build/
+ios/Pods/
+
+# Config files not needed by consumers
+.eslintrc.js
+.eslintrc.json
+.prettierrc
+.prettierrc.js
+.editorconfig
+.lefthook.yml
+lefthook.yml
+commitlint.config.js
+babel.config.js
+jest.config.js
+jest.setup.js
+turbo.json
+
+# TypeScript source maps (lib/ has the built output)
+tsconfig.json
+tsconfig.build.json
+
+# Docs that don't belong in the package
+CONTRIBUTING.md
+PUBLISHING.md
+
+# Misc
+*.log
+*.tgz
+.DS_Store

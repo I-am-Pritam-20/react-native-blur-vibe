@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint-typecheck:
+    name: Lint & Type Check
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'yarn'
+
+      - name: Install dependencies
+        run: yarn install --frozen-lockfile
+
+      - name: Lint
+        run: yarn lint
+
+      - name: Type check
+        run: yarn tsc --noEmit
+
+      - name: Check formatting
+        run: yarn prettier --check "src/**/*.{ts,tsx}"
+
+      - name: Build package (ensure it compiles)
+        run: yarn build
