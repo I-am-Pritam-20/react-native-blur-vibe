@@ -7,17 +7,24 @@ class BlurVibeView: UIView {
   private var blurEffectView: UIVisualEffectView?
   private let overlayView = UIView()
 
-  // MARK: - Properties
+  // MARK: - Props
 
+  /// Blur intensity 0–100. Maps to UIBlurEffect intensity via animator.
   @objc var blurAmount: NSNumber = 10 { didSet { updateBlur() } }
+
+  /// iOS blur style — maps to UIBlurEffectStyle
   @objc var blurType: NSString = "light" { didSet { updateBlur() } }
 
-  /// Overlay color ON TOP of blur layer — works on iOS AND Android.
-  /// Alpha channel controls visibility, just like CSS:
-  ///   backdrop-filter: blur(Xpx) + background-color: overlayColor
-  /// "#00000000" = pure blur, "#00000080" = tinted blur, "#000000FF" = hidden blur
+  /// Overlay color on top of blur. Works on iOS AND Android.
+  /// Alpha controls blur visibility — like CSS backdrop-filter + background-color.
+  /// Supports: "transparent", "#RGB", "#RRGGBB", "#RRGGBBAA"
   @objc var overlayColor: NSString = "transparent" { didSet { updateOverlay() } }
+
+  /// Fallback color when Reduce Transparency is enabled.
   @objc var reducedTransparencyFallbackColor: NSString = "#F2F2F2" { didSet { updateBlur() } }
+
+  /// Android-only downscale factor. Accepted on iOS to avoid prop warning — no-op.
+  @objc var blurRadius: NSNumber = 4
 
   // MARK: - Init
   override init(frame: CGRect) { super.init(frame: frame); commonInit() }
@@ -47,7 +54,8 @@ class BlurVibeView: UIView {
     if UIAccessibility.isReduceTransparencyEnabled {
       blurEffectView?.removeFromSuperview()
       blurEffectView = nil
-      backgroundColor = parseColor(reducedTransparencyFallbackColor as String) ?? UIColor(white: 0.95, alpha: 1)
+      backgroundColor = parseColor(reducedTransparencyFallbackColor as String)
+        ?? UIColor(white: 0.95, alpha: 1)
       return
     }
     backgroundColor = .clear
@@ -102,7 +110,8 @@ class BlurVibeView: UIView {
     }
   }
 
-  // MARK: - Color Parser — supports #RGB, #RRGGBB, #RRGGBBAA
+  // MARK: - Color Parser
+  // Supports: "transparent", "#RGB", "#RRGGBB", "#RRGGBBAA"
   private func parseColor(_ colorString: String) -> UIColor? {
     var hex = colorString.trimmingCharacters(in: .whitespacesAndNewlines)
     guard hex.hasPrefix("#") else { return nil }
@@ -110,23 +119,26 @@ class BlurVibeView: UIView {
     var rgbValue: UInt64 = 0
     Scanner(string: hex).scanHexInt64(&rgbValue)
     switch hex.count {
-    case 3:
+    case 3: // #RGB
       return UIColor(
-        red: CGFloat((rgbValue & 0xF00) >> 8) / 15,
+        red:   CGFloat((rgbValue & 0xF00) >> 8) / 15,
         green: CGFloat((rgbValue & 0x0F0) >> 4) / 15,
-        blue: CGFloat(rgbValue & 0x00F) / 15, alpha: 1)
-    case 6:
+        blue:  CGFloat( rgbValue & 0x00F       ) / 15,
+        alpha: 1)
+    case 6: // #RRGGBB
       return UIColor(
-        red: CGFloat((rgbValue & 0xFF0000) >> 16) / 255,
-        green: CGFloat((rgbValue & 0x00FF00) >> 8) / 255,
-        blue: CGFloat(rgbValue & 0x0000FF) / 255, alpha: 1)
+        red:   CGFloat((rgbValue & 0xFF0000) >> 16) / 255,
+        green: CGFloat((rgbValue & 0x00FF00) >>  8) / 255,
+        blue:  CGFloat( rgbValue & 0x0000FF        ) / 255,
+        alpha: 1)
     case 8: // #RRGGBBAA
       return UIColor(
-        red: CGFloat((rgbValue & 0xFF000000) >> 24) / 255,
+        red:   CGFloat((rgbValue & 0xFF000000) >> 24) / 255,
         green: CGFloat((rgbValue & 0x00FF0000) >> 16) / 255,
-        blue: CGFloat((rgbValue & 0x0000FF00) >> 8) / 255,
-        alpha: CGFloat(rgbValue & 0x000000FF) / 255)
-    default: return nil
+        blue:  CGFloat((rgbValue & 0x0000FF00) >>  8) / 255,
+        alpha: CGFloat( rgbValue & 0x000000FF        ) / 255)
+    default:
+      return nil
     }
   }
 }
