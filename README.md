@@ -1,9 +1,11 @@
-# react-native-blur-vibe
- 
-A modern, actively maintained blur view for React Native. Works on **iOS** and **Android** with full New Architecture (Fabric) support.
+# React Native Blur-Vibe
+
+<img width="1500" height="500" alt="github-banner" src="https://github.com/user-attachments/assets/78b2e5ec-5b57-48c0-b984-69cb57cbcf26" />
+<br></br>
+A modern, actively maintained blur view for React Native. Works on <b>iOS</b> and <b>Android</b> with full New Architecture (Fabric) support.
  
 > The key difference from other blur libraries: `overlayColor` works on **both iOS and Android** — letting you control blur visibility the same way CSS `backdrop-filter` + `background-color` works on the web.
- 
+ <br></br>
 [![npm version](https://img.shields.io/npm/v/react-native-blur-vibe)](https://www.npmjs.com/package/react-native-blur-vibe)
 [![Build iOS](https://github.com/I-am-Pritam-20/react-native-blur-vibe/actions/workflows/build-ios.yml/badge.svg)](https://github.com/I-am-Pritam-20/react-native-blur-vibe/actions/workflows/build-ios.yml)
 [![Build Android](https://github.com/I-am-Pritam-20/react-native-blur-vibe/actions/workflows/build-android.yml/badge.svg)](https://github.com/I-am-Pritam-20/react-native-blur-vibe/actions/workflows/build-android.yml)
@@ -46,6 +48,20 @@ The `overlayColor` alpha channel is what controls blur visibility:
 **This works on both iOS and Android.** Not just Android like other libraries.
  
 ---
+
+<details>
+  <summary><h3>Screenshots (Expand to see)</h3></summary>
+  <table>
+  <tr>
+    <td align="center"> <h3>Android</h3>
+      <img width="244" height="462" alt="Android-Demo" src="https://github.com/user-attachments/assets/e1cd120e-1ce1-4bba-aef1-4182aa023fbb" />
+    </td>
+    <td align="center"> <h3>iOS</h3>
+      <img width="244" height="462" alt="iPhone-Demo" src="https://github.com/user-attachments/assets/4b8ad035-d2ff-471e-b3e6-a645c87ea066" />
+    </td>
+  </tr>
+</table>
+</details>
  
 ## Installation
  
