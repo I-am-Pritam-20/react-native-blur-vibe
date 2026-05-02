@@ -28,9 +28,15 @@ jobs:
       - name: Install CocoaPods
         run: gem install cocoapods --no-document
 
+      - name: Install xcpretty
+        run: gem install xcpretty --no-document
+
       - name: Install example pods
         working-directory: example/ios
         run: pod install --repo-update
+
+      - name: List available simulators
+        run: xcrun simctl list devices available
 
       - name: Build iOS example (Debug, no signing)
         working-directory: example/ios
@@ -40,7 +46,7 @@ jobs:
             -scheme BlurVibeExample \
             -configuration Debug \
             -sdk iphonesimulator \
-            -destination 'platform=iOS Simulator,name=iPhone 16,OS=latest' \
+            -destination 'generic/platform=iOS Simulator' \
             -derivedDataPath /tmp/DerivedData \
             CODE_SIGNING_ALLOWED=NO \
             build \

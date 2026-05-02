@@ -7,25 +7,23 @@ import android.graphics.Color
 import android.graphics.RenderEffect
 import android.graphics.Shader
 import android.os.Build
-import android.renderscript.Allocation
-import android.renderscript.Element
-import android.renderscript.RenderScript
-import android.renderscript.ScriptIntrinsicBlur
 import android.view.View
 import android.view.ViewGroup
 import android.widget.FrameLayout
+import androidx.renderscript.Allocation
+import androidx.renderscript.Element
+import androidx.renderscript.RenderScript
+import androidx.renderscript.ScriptIntrinsicBlur
 
 /**
  * BlurVibeView — Android implementation
  *
- * Blur strategy:
- *   API 31+ (Android 12): RenderEffect.createBlurEffect() — hardware accelerated, Fabric-safe
- *   API 18-30:            RenderScript ScriptIntrinsicBlur — bitmap-based fallback
- *   API < 18:             reducedTransparencyFallbackColor solid color
+ * API 31+ : RenderEffect (hardware accelerated, most performant)
+ * API 24-30: RenderScript via androidx (bitmap-based fallback)
  *
- * overlayColor is composited ON TOP of blur, same as CSS:
+ * overlayColor is composited ON TOP of blur — same concept as CSS:
  *   backdrop-filter: blur(Xpx) + background-color: overlayColor
- * Alpha channel of overlayColor controls how much blur is visible.
+ * Alpha of overlayColor controls how much blur is visible.
  */
 class BlurVibeView(context: Context) : FrameLayout(context) {
 
@@ -65,15 +63,15 @@ class BlurVibeView(context: Context) : FrameLayout(context) {
   }
 
   private fun applyBlur() {
-    when {
-      Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> applyRenderEffect()
-      Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN_MR1 -> post { renderScriptBlur() }
-      else -> setBackgroundColor(reducedTransparencyFallbackColorValue)
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+      applyRenderEffect()
+    } else {
+      post { renderScriptBlur() }
     }
     updateOverlay()
   }
 
-  /** Android 12+: Hardware-accelerated RenderEffect. Zero bitmap copy, most performant. */
+  /** Android 12+ — hardware accelerated, zero bitmap copy */
   private fun applyRenderEffect() {
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
       val sigma = (blurAmountValue * 0.5f).coerceAtLeast(0.01f)
@@ -82,7 +80,7 @@ class BlurVibeView(context: Context) : FrameLayout(context) {
     }
   }
 
-  /** API 18-30: Capture what's behind this view, blur it with RenderScript, draw as background. */
+  /** API 24-30 — androidx RenderScript bitmap blur */
   private fun renderScriptBlur() {
     val parentView = parent as? ViewGroup ?: return
     if (width <= 0 || height <= 0) return
@@ -116,7 +114,6 @@ class BlurVibeView(context: Context) : FrameLayout(context) {
   private fun updateOverlay() {
     overlayView.setBackgroundColor(overlayColorValue)
     bringChildToFront(overlayView)
-    // Bring all React children above the overlay
     for (i in 0 until childCount) {
       val child = getChildAt(i)
       if (child !== overlayView) bringChildToFront(child)
