@@ -66,8 +66,10 @@ android {
 repositories {
     google()
     mavenCentral()
+    maven { url 'https://jitpack.io' }
   }
 
 dependencies {
   implementation "com.facebook.react:react-android"
+  implementation 'com.qmdeve.blurview:core:1.1.4'
 }

@@ -7,15 +7,8 @@ import com.facebook.react.uimanager.annotations.ReactProp
 /**
  * BlurVibeViewManager
  *
- * All @ReactProp handler names are intentionally distinct from BaseViewManager /
- * ReactViewGroup / View supertype methods to avoid "hides member" compile errors:
- *
- *   setBlurAmount              — unique, not in any supertype
- *   setBlurTypeProp            — avoids any "setBlurType" conflict
- *   setOverlayColorProp        — avoids BaseViewManager.setBackgroundColor etc.
- *   setReducedTransparencyFallbackColor — unique
- *   setBlurRadiusProp          — avoids View.setRadius / BlurView.setBlurRadius
- *   setBlurBorderRadius        — avoids BaseViewManager.setBorderRadius
+ * ViewGroupManager — BlurVibeView (which extends BlurViewGroup/FrameLayout)
+ * hosts React children, so we must use ViewGroupManager, not SimpleViewManager.
  */
 class BlurVibeViewManager : ViewGroupManager<BlurVibeView>() {
 
@@ -24,29 +17,35 @@ class BlurVibeViewManager : ViewGroupManager<BlurVibeView>() {
   override fun createViewInstance(context: ThemedReactContext) = BlurVibeView(context)
 
   @ReactProp(name = "blurAmount", defaultFloat = 10f)
-  fun setBlurAmount(view: BlurVibeView, amount: Float) =
+  fun setBlurAmount(view: BlurVibeView, amount: Float) {
     view.setBlurAmount(amount)
+  }
 
   @ReactProp(name = "blurType")
-  fun setBlurTypeProp(view: BlurVibeView, @Suppress("UNUSED_PARAMETER") type: String?) {
-    // iOS UIBlurEffectStyle — no-op on Android
+  fun setBlurType(view: BlurVibeView, type: String?) {
+    // No-op on Android — blurType maps to iOS UIBlurEffectStyle only
   }
 
   @ReactProp(name = "overlayColor")
-  fun setOverlayColorProp(view: BlurVibeView, color: String?) =
-    view.applyOverlayColor(color)
+  fun setOverlayColor(view: BlurVibeView, color: String?) {
+    view.setOverlayColor(color)
+  }
 
   @ReactProp(name = "reducedTransparencyFallbackColor")
-  fun setReducedTransparencyFallbackColor(view: BlurVibeView, color: String?) =
+  fun setReducedTransparencyFallbackColor(view: BlurVibeView, color: String?) {
     view.setReducedTransparencyFallbackColor(color)
+  }
 
   @ReactProp(name = "blurRadius", defaultInt = 4)
-  fun setBlurRadiusProp(view: BlurVibeView, radius: Int) =
-    view.applyBlurRadius(radius)
+  fun setBlurRadius(view: BlurVibeView, radius: Int) {
+    view.setBlurRadius(radius)
+  }
 
   @ReactProp(name = "borderRadius", defaultFloat = 0f)
-  fun setBlurBorderRadius(view: BlurVibeView, radius: Float) =
-    view.applyBorderRadius(radius)
+  fun setBlurBorderRadius(view: BlurVibeView, radius: Float) {
+    view.setBorderRadius(radius)
+  }
 
+  // React Native's Yoga handles child layout — return false
   override fun needsCustomLayoutForChildren(): Boolean = false
 }
