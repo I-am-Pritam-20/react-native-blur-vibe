@@ -7,8 +7,8 @@ import com.facebook.react.uimanager.annotations.ReactProp
 /**
  * BlurVibeViewManager
  *
- * ViewGroupManager — BlurVibeView (which extends BlurViewGroup/FrameLayout)
- * hosts React children, so we must use ViewGroupManager, not SimpleViewManager.
+ * ViewGroupManager because BlurVibeView (→ BlurViewGroup → FrameLayout) hosts
+ * React children. needsCustomLayoutForChildren() = false lets Yoga own layout.
  */
 class BlurVibeViewManager : ViewGroupManager<BlurVibeView>() {
 
@@ -17,34 +17,30 @@ class BlurVibeViewManager : ViewGroupManager<BlurVibeView>() {
   override fun createViewInstance(context: ThemedReactContext) = BlurVibeView(context)
 
   @ReactProp(name = "blurAmount", defaultFloat = 10f)
-  fun setBlurAmount(view: BlurVibeView, amount: Float) {
-    view.setBlurAmount(amount)
-  }
+  fun setBlurAmount(view: BlurVibeView, amount: Float) = view.setBlurAmount(amount)
 
   @ReactProp(name = "blurType")
   fun setBlurType(view: BlurVibeView, type: String?) {
-    // No-op on Android — blurType maps to iOS UIBlurEffectStyle only
+    // No-op on Android — blurType is an iOS UIBlurEffectStyle concept only
   }
 
   @ReactProp(name = "overlayColor")
-  fun setOverlayColor(view: BlurVibeView, color: String?) {
-    view.setOverlayColor(color)
-  }
+  fun setOverlayColor(view: BlurVibeView, color: String?) = view.setOverlayColor(color)
 
   @ReactProp(name = "reducedTransparencyFallbackColor")
-  fun setReducedTransparencyFallbackColor(view: BlurVibeView, color: String?) {
+  fun setReducedTransparencyFallbackColor(view: BlurVibeView, color: String?) =
     view.setReducedTransparencyFallbackColor(color)
-  }
 
   @ReactProp(name = "blurRadius", defaultInt = 4)
-  fun setBlurRadius(view: BlurVibeView, radius: Int) {
-    view.setBlurRadius(radius)
-  }
+  fun setBlurRadius(view: BlurVibeView, radius: Int) = view.setBlurRadius(radius)
+
+  @ReactProp(name = "borderRadius", defaultFloat = 0f)
+  fun setBorderRadius(view: BlurVibeView, radius: Float) = view.setBorderRadius(radius)
 
   override fun onDropViewInstance(view: BlurVibeView) {
     super.onDropViewInstance(view)
   }
 
-  // React Native's Yoga handles child layout — return false
+  // Yoga drives all child layout — return false
   override fun needsCustomLayoutForChildren(): Boolean = false
 }
