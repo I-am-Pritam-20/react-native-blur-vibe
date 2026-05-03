@@ -1,68 +1,58 @@
 package com.blurvibe
 
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Outline
+import android.graphics.Paint
+import android.graphics.Rect
+import android.graphics.RectF
 import android.util.TypedValue
 import android.view.View
 import android.view.ViewGroup
 import android.view.ViewOutlineProvider
 import androidx.core.graphics.toColorInt
-import eightbitlab.com.blurview.BlurView
-import eightbitlab.com.blurview.RenderEffectBlur
-import eightbitlab.com.blurview.RenderScriptBlur
+import com.facebook.react.views.view.ReactViewGroup
 
 /**
  * BlurVibeView — CSS backdrop-filter: blur() for React Native / Android
  *
- * Built on Dimezis/BlurView 2.0.4 — the same library used by the official
- * @react-native-community/blur package.
+ * Extends ReactViewGroup so it can host React Native children correctly
+ * (Yoga layout, touch events, z-ordering all work out of the box).
  *
- * ─── Why QmBlurView was 3 FPS ────────────────────────────────────────────────
+ * Blur is produced by BlurCaptureCoordinator — a singleton per root view that
+ * captures + blurs the root ONCE per vsync and shares the result to every
+ * registered BlurVibeView. N blur views on screen = same cost as 1.
  *
- *  The test app rendered 36 BlurViews simultaneously in one ScrollView.
- *  QmBlurView's OnPreDrawListener fired on every frame and called rootView.draw()
- *  (a full View tree render into a bitmap) synchronously inside the pre-draw callback
- *  — once per BlurView. 36 full-screen renders per frame × 60 fps = impossible.
- *
- *  Additional multipliers: blurRounds=5 (5× blur passes), radius mapped to 0–100
- *  (QmBlurView's kernel is designed for 0–25), and the capture root was the full
- *  ReactRootView (entire screen), not the immediate parent.
- *
- * ─── Why Dimezis BlurView 2.0.4 is fast ─────────────────────────────────────
- *
- *  • API 31+: RenderEffectBlur — pure GPU pipeline. Zero CPU, zero bitmap copies.
- *    The OS compositor applies the blur; rootView.draw() is never called at all.
- *
- *  • API < 31: RenderScriptBlur — captures root at DOWNSAMPLED resolution (1/downsample²
- *    pixels), then runs RenderScript Gaussian on the worker thread. Much cheaper than
- *    QmBlurView's CPU Gaussian because RenderScript uses SIMD/GPU intrinsics.
- *
- *  • setHasFixedTransformationMatrix(false) — correct for ScrollView children.
- *    setHasFixedTransformationMatrix(true) — use for Modal/overlay (static position)
- *    to skip the per-frame matrix recalculation entirely.
- *
- *  • One blur update per Choreographer vsync at most — we gate updates so even with
- *    36 BlurViews in one ScrollView each costs one cheap invalidate(), not one
- *    rootView.draw().
- *
- * ─── Compatibility ────────────────────────────────────────────────────────────
- *  ScrollView, FlatList, FlashList, Modal, ImageBackground,
- *  Reanimated (JS thread + UI thread), react-navigation stack/tab/drawer
+ * Each view clips the shared blurred bitmap to its own screen-space rect in
+ * onDraw(), then draws the overlay color on top.
  */
-class BlurVibeView(context: Context) : BlurView(context) {
+class BlurVibeView(context: Context) : ReactViewGroup(context) {
 
   // ── State ──────────────────────────────────────────────────────────────────
 
   private var blurRadius     = DEFAULT_BLUR_RADIUS
   private var overlayColor   = Color.TRANSPARENT
   private var cornerRadiusPx = 0f
-  private var isSetupDone    = false
+
+  // ── Coordinator ───────────────────────────────────────────────────────────
+
+  private var coordinator: BlurCaptureCoordinator? = null
+
+  // ── Draw state (main thread only) ─────────────────────────────────────────
+
+  @Volatile private var latestBitmap: Bitmap? = null
+  private val bitmapPaint  = Paint(Paint.FILTER_BITMAP_FLAG)
+  private val overlayPaint = Paint()
+  private val srcRect      = Rect()
+  private val dstRect      = RectF()
 
   // ── Init ───────────────────────────────────────────────────────────────────
 
   init {
-    clipChildren  = true
+    setWillNotDraw(false)
+    super.setBackgroundColor(Color.TRANSPARENT)
     clipToOutline = true
   }
 
@@ -70,131 +60,144 @@ class BlurVibeView(context: Context) : BlurView(context) {
 
   override fun onAttachedToWindow() {
     super.onAttachedToWindow()
-    if (!isSetupDone) setupBlur()
+    attachToCoordinator()
   }
 
   override fun onDetachedFromWindow() {
-    isSetupDone = false
+    coordinator?.unregister(this)
+    coordinator = null
     super.onDetachedFromWindow()
   }
 
-  // ── Blur setup ─────────────────────────────────────────────────────────────
+  // ── Coordinator attachment ─────────────────────────────────────────────────
 
-  private fun setupBlur() {
-    val root = findOptimalBlurRoot() ?: return
+  private fun attachToCoordinator() {
+    coordinator?.unregister(this)
+    val root = findBlurRoot() ?: return
+    val coord = BlurCaptureCoordinator.forRoot(root).also {
+      it.blurRadius = blurRadius
+      coordinator   = it
+    }
+    coord.register(this)
+  }
 
-    try {
-      // Pick algorithm: RenderEffectBlur (GPU, API 31+) or RenderScriptBlur (CPU, API < 31)
-      val algorithm = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
-        RenderEffectBlur()
-      } else {
-        RenderScriptBlur(context)
-      }
+  /** Called by coordinator on main thread when a new blurred bitmap is ready. */
+  fun onBlurReady(bitmap: Bitmap) {
+    latestBitmap = bitmap
+    invalidate()
+  }
 
-      setupWith(root, algorithm)
-        .setBlurRadius(blurRadius)
-        .setOverlayColor(overlayColor)
-        // false = recalculate position every frame (correct for ScrollView/FlatList children)
-        // If the view never moves (Modal overlay), true would be faster — but false is safe always
-        .setHasFixedTransformationMatrix(false)
-        .setBlurAutoUpdate(true)
+  // ── Drawing ────────────────────────────────────────────────────────────────
 
-      isSetupDone = true
-      updateCornerRadius()
-    } catch (_: Exception) {
-      // Not fully attached yet — onAttachedToWindow will retry
+  override fun onDraw(canvas: Canvas) {
+    val bitmap = latestBitmap?.takeIf { !it.isRecycled } ?: return
+    val root   = findBlurRoot() ?: return
+
+    // compute this view's offset within the blur root
+    val myLoc   = IntArray(2);   getLocationInWindow(myLoc)
+    val rootLoc = IntArray(2);   root.getLocationInWindow(rootLoc)
+
+    val l = myLoc[0] - rootLoc[0]
+    val t = myLoc[1] - rootLoc[1]
+
+    // the blurred bitmap is at 1/DOWNSAMPLE_FACTOR resolution — scale coords
+    val f = BlurCaptureCoordinator.DOWNSAMPLE_FACTOR
+    srcRect.set(
+      (l / f).toInt().coerceAtLeast(0),
+      (t / f).toInt().coerceAtLeast(0),
+      ((l + width)  / f).toInt().coerceAtMost(bitmap.width),
+      ((t + height) / f).toInt().coerceAtMost(bitmap.height)
+    )
+    dstRect.set(0f, 0f, width.toFloat(), height.toFloat())
+
+    if (!srcRect.isEmpty) canvas.drawBitmap(bitmap, srcRect, dstRect, bitmapPaint)
+
+    if (Color.alpha(overlayColor) > 0) {
+      overlayPaint.color = overlayColor
+      canvas.drawRect(dstRect, overlayPaint)
     }
   }
 
-  // ── Optimal blur root ─────────────────────────────────────────────────────
-  //
-  // Dimezis calls rootView.draw(canvas) to capture the content to blur.
-  // The SMALLER the root, the CHEAPER the capture.
-  //
-  // Priority order:
-  //   1. react-native-screens Screen — scoped to current screen, avoids nav chrome
-  //   2. ReactRootView             — full RN tree but correct for backdrop semantics
-  //   3. Activity window decor     — fallback, works but captures nav bars too
-
-  private fun findOptimalBlurRoot(): ViewGroup? {
-    var p = parent
-    while (p != null) {
-      val name = (p as? View)?.javaClass?.name ?: break
-      if (name == "com.swmansion.rnscreens.Screen") return p as? ViewGroup
-      p = (p as? View)?.parent
-    }
-    p = parent
-    while (p != null) {
-      val name = (p as? View)?.javaClass?.name ?: break
-      if (name == "com.facebook.react.ReactRootView") return p as? ViewGroup
-      p = (p as? View)?.parent
-    }
-    return rootView as? ViewGroup
-  }
-
-  // ── Public setters (called from ViewManager on UI thread) ──────────────────
+  // ── Public setters (ViewManager → UI thread) ──────────────────────────────
 
   fun setBlurAmount(amount: Float) {
     blurRadius = (amount.coerceIn(0f, 100f) / 100f) * 25f
-    if (isSetupDone) {
-      try { setBlurRadius(blurRadius) } catch (_: Exception) {}
-    }
+    coordinator?.blurRadius = blurRadius
   }
 
   fun applyOverlayColor(colorString: String?) {
     overlayColor = parseHexColor(colorString ?: "transparent") ?: Color.TRANSPARENT
-    if (isSetupDone) {
-      try { setOverlayColor(overlayColor) } catch (_: Exception) {}
-    }
+    invalidate()
   }
 
+  /**
+   * blurRadius prop: Android downsample factor (1–8).
+   * Higher = faster + softer. Sets the global factor on the coordinator.
+   */
   fun applyBlurRadius(factor: Int) {
-    // blurRadius prop = Android downsample hint. Dimezis handles downsampling internally
-    // via the algorithm, but we can re-map to a softer blur radius as a quality tradeoff.
-    // Higher factor = softer/faster blur: we reduce the gaussian radius proportionally.
-    val scale = factor.coerceIn(1, 8) / 8f  // 0.125 – 1.0
-    blurRadius = ((blurRadius) * (0.5f + scale * 0.5f)).coerceIn(1f, 25f)
-    if (isSetupDone) {
-      try { setBlurRadius(blurRadius) } catch (_: Exception) {}
-    }
+    BlurCaptureCoordinator.DOWNSAMPLE_FACTOR = factor.coerceIn(2, 16).toFloat()
+    // re-attach so coordinator picks up new factor
+    attachToCoordinator()
   }
 
   fun applyBorderRadius(radiusDp: Float) {
     cornerRadiusPx = TypedValue.applyDimension(
       TypedValue.COMPLEX_UNIT_DIP, radiusDp, context.resources.displayMetrics
     )
-    updateCornerRadius()
+    updateOutline()
   }
 
-  fun setReducedTransparencyFallbackColor(@Suppress("UNUSED_PARAMETER") colorString: String?) {
-    // Reserved — Dimezis handles reduced-transparency fallback via setBlurEnabled(false)
-    // which shows the view background. Implement via accessibility listener if needed.
+  fun setReducedTransparencyFallbackColor(@Suppress("UNUSED_PARAMETER") color: String?) {
+    // iOS-only concept — no-op on Android
   }
 
-  // ── Corner radius ──────────────────────────────────────────────────────────
+  // ── Corner radius / outline ────────────────────────────────────────────────
 
-  private fun updateCornerRadius() {
-    outlineProvider = if (cornerRadiusPx > 0f) {
-      object : ViewOutlineProvider() {
+  private fun updateOutline() {
+    if (cornerRadiusPx > 0f) {
+      outlineProvider = object : ViewOutlineProvider() {
         override fun getOutline(view: View, outline: Outline) {
           outline.setRoundRect(0, 0, view.width, view.height, cornerRadiusPx)
         }
       }
+      clipToOutline = true
     } else {
-      ViewOutlineProvider.BACKGROUND
+      outlineProvider = ViewOutlineProvider.BACKGROUND
+      clipToOutline   = false
     }
-    clipToOutline = cornerRadiusPx > 0f
+    invalidate()
   }
 
   // ── React Native layout passthrough ───────────────────────────────────────
 
   override fun onLayout(changed: Boolean, left: Int, top: Int, right: Int, bottom: Int) {
-    // Yoga owns all layout — do not call super (BlurView extends FrameLayout which
-    // would re-layout children using FrameLayout gravity rules, fighting Yoga).
+    // Yoga owns layout — calling super would run ReactViewGroup's layout which is correct,
+    // but we must NOT call FrameLayout super here (ReactViewGroup handles it internally).
+  }
+
+  // ── Blur root finder ──────────────────────────────────────────────────────
+  //
+  // Priority: react-native-screens Screen → ReactRootView → window root
+  // The root is what gets captured — use the narrowest stable ancestor.
+
+  private fun findBlurRoot(): ViewGroup? {
+    var p = parent
+    while (p != null) {
+      if ((p as? View)?.javaClass?.name == "com.swmansion.rnscreens.Screen")
+        return p as? ViewGroup
+      p = (p as? View)?.parent
+    }
+    p = parent
+    while (p != null) {
+      if ((p as? View)?.javaClass?.name == "com.facebook.react.ReactRootView")
+        return p as? ViewGroup
+      p = (p as? View)?.parent
+    }
+    return rootView as? ViewGroup
   }
 
   // ── Color parser ──────────────────────────────────────────────────────────
-  // Supports: "transparent", "#RGB", "#RRGGBB", "#RRGGBBAA", named colors
+  // Handles: "transparent", "#RGB", "#RRGGBB", "#RRGGBBAA", named colors
 
   private fun parseHexColor(s: String): Int? {
     val t = s.trim()
@@ -203,27 +206,25 @@ class BlurVibeView(context: Context) : BlurView(context) {
     val hex = t.removePrefix("#")
     return try {
       when (hex.length) {
-        3 -> Color.argb(255,
-          hex[0].toString().repeat(2).toInt(16),
-          hex[1].toString().repeat(2).toInt(16),
-          hex[2].toString().repeat(2).toInt(16))
-        6 -> Color.argb(255,
-          hex.substring(0, 2).toInt(16),
-          hex.substring(2, 4).toInt(16),
-          hex.substring(4, 6).toInt(16))
-        8 -> Color.argb(
-          hex.substring(6, 8).toInt(16),   // alpha is LAST byte in #RRGGBBAA
-          hex.substring(0, 2).toInt(16),
-          hex.substring(2, 4).toInt(16),
-          hex.substring(4, 6).toInt(16))
+        3    -> Color.argb(255,
+                  hex[0].toString().repeat(2).toInt(16),
+                  hex[1].toString().repeat(2).toInt(16),
+                  hex[2].toString().repeat(2).toInt(16))
+        6    -> Color.argb(255,
+                  hex.substring(0, 2).toInt(16),
+                  hex.substring(2, 4).toInt(16),
+                  hex.substring(4, 6).toInt(16))
+        8    -> Color.argb(
+                  hex.substring(6, 8).toInt(16),   // alpha LAST in #RRGGBBAA
+                  hex.substring(0, 2).toInt(16),
+                  hex.substring(2, 4).toInt(16),
+                  hex.substring(4, 6).toInt(16))
         else -> null
       }
     } catch (_: NumberFormatException) { null }
   }
 
-  // ── Constants ──────────────────────────────────────────────────────────────
-
   companion object {
-    private const val DEFAULT_BLUR_RADIUS = 2.5f   // blurAmount=10 → 2.5 (10/100 × 25)
+    private const val DEFAULT_BLUR_RADIUS = 2.5f   // blurAmount=10 → 2.5
   }
 }
