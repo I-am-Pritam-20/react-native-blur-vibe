@@ -80,7 +80,6 @@ class BlurVibeView(context: Context) : BlurViewGroup(context, null) {
    * Also wraps it in a Choreographer gate so blur work fires at most ONCE per vsync,
    * even when many views invalidate simultaneously (scroll, animation, etc).
    */
-   */
   private fun swapBlurRootToOptimalAncestor() {
     val newRoot = findNearestScreenAncestor() ?: findNearestReactRootView() ?: return
 
