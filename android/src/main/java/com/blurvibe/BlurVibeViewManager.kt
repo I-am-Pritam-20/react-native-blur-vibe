@@ -7,8 +7,13 @@ import com.facebook.react.uimanager.annotations.ReactProp
 /**
  * BlurVibeViewManager
  *
- * ViewGroupManager because BlurVibeView (→ BlurViewGroup → FrameLayout) hosts
- * React children. needsCustomLayoutForChildren() = false lets Yoga own layout.
+ * ViewGroupManager — BlurVibeView (→ BlurView → FrameLayout) hosts React children,
+ * so we must use ViewGroupManager. needsCustomLayoutForChildren() = false lets Yoga own layout.
+ *
+ * Method naming rules to avoid BaseViewManager / BlurView supertype collisions:
+ *   - All @ReactProp handler names on the MANAGER are prefixed to avoid hiding supertypes
+ *   - All public methods on BlurVibeView (the VIEW) use unique names (apply* prefix)
+ *     that don't exist in BlurView, FrameLayout, View, or BaseViewManager
  */
 class BlurVibeViewManager : ViewGroupManager<BlurVibeView>() {
 
@@ -21,26 +26,21 @@ class BlurVibeViewManager : ViewGroupManager<BlurVibeView>() {
 
   @ReactProp(name = "blurType")
   fun setBlurType(view: BlurVibeView, type: String?) {
-    // No-op on Android — blurType is an iOS UIBlurEffectStyle concept only
+    // No-op on Android — blurType maps to iOS UIBlurEffectStyle only
   }
 
   @ReactProp(name = "overlayColor")
-  fun setOverlayColor(view: BlurVibeView, color: String?) = view.setOverlayColor(color)
+  fun setOverlayColor(view: BlurVibeView, color: String?) = view.applyOverlayColor(color)
 
   @ReactProp(name = "reducedTransparencyFallbackColor")
   fun setReducedTransparencyFallbackColor(view: BlurVibeView, color: String?) =
     view.setReducedTransparencyFallbackColor(color)
 
   @ReactProp(name = "blurRadius", defaultInt = 4)
-  fun setBlurRadius(view: BlurVibeView, radius: Int) = view.setBlurRadius(radius)
+  fun setBlurRadiusProp(view: BlurVibeView, radius: Int) = view.applyBlurRadius(radius)
 
   @ReactProp(name = "borderRadius", defaultFloat = 0f)
   fun setBlurBorderRadius(view: BlurVibeView, radius: Float) = view.applyBorderRadius(radius)
 
-  override fun onDropViewInstance(view: BlurVibeView) {
-    super.onDropViewInstance(view)
-  }
-
-  // Yoga drives all child layout — return false
   override fun needsCustomLayoutForChildren(): Boolean = false
 }
