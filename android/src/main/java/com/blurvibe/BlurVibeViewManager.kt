@@ -35,7 +35,7 @@ class BlurVibeViewManager : ViewGroupManager<BlurVibeView>() {
   fun setBlurRadius(view: BlurVibeView, radius: Int) = view.setBlurRadius(radius)
 
   @ReactProp(name = "borderRadius", defaultFloat = 0f)
-  fun setBlurBorderRadius(view: BlurVibeView, radius: Float) = view.setCornerRadius(radius)
+  fun setBlurBorderRadius(view: BlurVibeView, radius: Float) = view.applyBorderRadius(radius)
 
   override fun onDropViewInstance(view: BlurVibeView) {
     super.onDropViewInstance(view)

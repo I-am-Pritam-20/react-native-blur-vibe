@@ -223,7 +223,7 @@ class BlurVibeView(context: Context) : BlurViewGroup(context, null) {
     scheduleBlurFrame()
   }
 
-  fun setCornerRadius(radiusDp: Float) {
+  fun applyBorderRadius(radiusDp: Float) {
     currentCornerRadius = radiusDp
     updateCornerRadiusInternal()
   }
