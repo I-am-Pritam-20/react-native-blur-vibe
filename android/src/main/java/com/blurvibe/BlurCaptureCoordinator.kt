@@ -57,7 +57,8 @@ internal class BlurCaptureCoordinator private constructor(
   private var outputAlloc: Allocation?          = null
 
   // blur params
-  var blurRadius:       Float = 8f  set(v) { field = v.coerceIn(1f, 25f) }
+  var blurRadius: Float = 8f
+    set(value) { field = value.coerceIn(1f, 25f) }
   var downsampleFactor: Float = DOWNSAMPLE_FACTOR
 
   // frame gate — at most one capture queued at a time
