@@ -41,10 +41,12 @@ class BlurVibeView(context: Context) : BlurViewGroup(context, null) {
     private const val MAX_BLUR_AMOUNT = 100f
     private const val MAX_BLUR_RADIUS = 25f  // QmBlurView Gaussian kernel designed for 0-25
 
-    // Maps 0–100 blurAmount to 0–25 QmBlurView radius range
+    // Maps 0–100 blurAmount to 0–25 QmBlurView radius range.
+    // Uses a squared curve so low values (0–30) stay subtle and mid-high values
+    // (50–100) produce the strong frosted-glass spread seen in CSS backdrop-blur-md/lg/xl.
     private fun mapBlurAmountToRadius(amount: Float): Float {
-      val clamped = amount.coerceIn(MIN_BLUR_AMOUNT, MAX_BLUR_AMOUNT)
-      return (clamped / MAX_BLUR_AMOUNT) * MAX_BLUR_RADIUS
+      val t = amount.coerceIn(MIN_BLUR_AMOUNT, MAX_BLUR_AMOUNT) / MAX_BLUR_AMOUNT // 0.0–1.0
+      return t * t * MAX_BLUR_RADIUS  // quadratic: more spread at higher values
     }
   }
 
@@ -52,8 +54,8 @@ class BlurVibeView(context: Context) : BlurViewGroup(context, null) {
     super.setBackgroundColor(currentOverlayColor)
     clipChildren = true
     clipToOutline = true
-    blurRounds = 1          // was 5 — single pass is visually identical, 5x cheaper
-    super.setDownsampleFactor(8.0f)  // was 6 — 1/64 pixel count, blur hides the difference
+    blurRounds = 2          // 2 passes = smooth Gaussian spread (frosted glass quality)
+    super.setDownsampleFactor(4.0f)  // 1/4 res — eliminates pixelation, still fast
   }
 
   override fun onAttachedToWindow() {
