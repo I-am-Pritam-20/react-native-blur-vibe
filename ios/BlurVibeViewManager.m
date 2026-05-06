@@ -3,17 +3,17 @@
 
 RCT_EXTERN_MODULE(BlurVibeViewManager, RCTViewManager)
 
-// Float  → NSNumber  matches TS Float 
+// ── Core props ─────────────────────────────────────────────────────────────
 RCT_EXPORT_VIEW_PROPERTY(blurAmount, NSNumber)
-
-// String → NSString  matches TS string 
 RCT_EXPORT_VIEW_PROPERTY(blurType, NSString)
-
-// String → NSString  matches TS string 
 RCT_EXPORT_VIEW_PROPERTY(overlayColor, NSString)
-
-// String → NSString  matches TS string 
 RCT_EXPORT_VIEW_PROPERTY(reducedTransparencyFallbackColor, NSString)
+RCT_EXPORT_VIEW_PROPERTY(blurRadius, NSNumber)       // Android-only, no-op on iOS
 
-// Int32  → NSNumber  matches TS Int32  (no-op in Swift)
-RCT_EXPORT_VIEW_PROPERTY(blurRadius, NSNumber)
+// ── Progressive blur props ──────────────────────────────────────────────────
+RCT_EXPORT_VIEW_PROPERTY(progressiveBlurDirection, NSString)
+RCT_EXPORT_VIEW_PROPERTY(progressiveStartIntensity, NSNumber)
+RCT_EXPORT_VIEW_PROPERTY(progressiveEndIntensity, NSNumber)
+
+// ── Noise prop ──────────────────────────────────────────────────────────────
+RCT_EXPORT_VIEW_PROPERTY(noiseFactor, NSNumber)

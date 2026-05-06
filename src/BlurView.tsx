@@ -5,17 +5,36 @@ import NativeBlurVibeView from './BlurVibeViewNativeComponent';
 /**
  * BlurView — react-native-blur-vibe
  *
- * Cross-platform blur view for React Native.
- * iOS: UIVisualEffectView | Android: RenderEffect (API 31+) / RenderScript fallback
+ * Cross-platform backdrop blur.
  *
- * overlayColor works on BOTH platforms — composites a color on top of the blur,
- * exactly like CSS: backdrop-filter: blur(Xpx) + background-color: overlayColor
+ * iOS:               UIVisualEffectView — compositor-level, always smooth
+ * Android API 31+:   Dual-RenderNode + RenderEffect — GPU, no pixelation,
+ *                    supports progressive blur + noise
+ * Android API < 31:  QmBlurView RenderScript — CPU, smooth at downsample=4
  *
- * @example
+ * @example Basic frosted glass
  * <BlurView
- *   blurAmount={15}
- *   blurType="systemMaterial"
+ *   blurAmount={30}
+ *   overlayColor="#FFFFFF20"
+ *   style={StyleSheet.absoluteFill}
+ * />
+ *
+ * @example Progressive blur (fades from full blur at top to transparent at bottom)
+ * <BlurView
+ *   blurAmount={40}
  *   overlayColor="#00000040"
+ *   progressiveBlurDirection="topToBottom"
+ *   progressiveStartIntensity={1}
+ *   progressiveEndIntensity={0}
+ *   style={StyleSheet.absoluteFill}
+ * />
+ *
+ * @example Music card frosted glass with noise
+ * <BlurView
+ *   blurAmount={60}
+ *   overlayColor="#FFFFFF15"
+ *   noiseFactor={0.12}
+ *   borderRadius={16}
  *   style={StyleSheet.absoluteFill}
  * />
  */
@@ -25,6 +44,10 @@ const BlurView = ({
   overlayColor,
   reducedTransparencyFallbackColor = '#F2F2F2',
   blurRadius = 4,
+  progressiveBlurDirection = 'none',
+  progressiveStartIntensity = 1.0,
+  progressiveEndIntensity = 0.0,
+  noiseFactor = 0.08,
   style,
   children,
   ...rest
@@ -39,6 +62,10 @@ const BlurView = ({
       overlayColor={resolvedOverlayColor}
       reducedTransparencyFallbackColor={reducedTransparencyFallbackColor}
       blurRadius={blurRadius}
+      progressiveBlurDirection={progressiveBlurDirection}
+      progressiveStartIntensity={progressiveStartIntensity}
+      progressiveEndIntensity={progressiveEndIntensity}
+      noiseFactor={noiseFactor}
       style={[styles.transparent, style]}
       {...rest}
     >

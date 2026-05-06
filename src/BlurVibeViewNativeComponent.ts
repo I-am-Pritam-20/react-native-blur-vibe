@@ -4,20 +4,6 @@ import type { HostComponent, ViewProps } from 'react-native';
 // @ts-ignore - internal RN path, exists at runtime
 import type { Float, Int32 } from 'react-native/Libraries/Types/CodegenTypes';
 
-/**
- * NativeComponent codegen spec for BlurVibeView.
- *
- * Type mapping (JS → Native):
- *   Float   → NSNumber (iOS) / Float (Android)
- *   string  → NSString (iOS) / String (Android)
- *   Int32   → NSNumber (iOS) / Int   (Android)
- *
- * Color props (overlayColor, reducedTransparencyFallbackColor) use
- * plain `string` — NOT the RN `ColorValue` type — because we parse
- * hex manually on both platforms for full alpha channel control.
- * Using ColorValue would trigger RN's color normalization which
- * reorders alpha bytes and breaks #RRGGBBAA format.
- */
 export interface NativeBlurVibeViewProps extends ViewProps {
   // 0–100 blur intensity
   blurAmount?: Float;
@@ -28,11 +14,19 @@ export interface NativeBlurVibeViewProps extends ViewProps {
   // Hex color string with alpha — "transparent", "#RGB", "#RRGGBB", "#RRGGBBAA"
   overlayColor?: string;
 
-  // Fallback when blur unavailable (Reduce Transparency / old API)
+  // Fallback when blur unavailable
   reducedTransparencyFallbackColor?: string;
 
-  // Android downscale factor 1–8 — no-op on iOS
+  // Android API < 31 only: downsample factor 1–8
   blurRadius?: Int32;
+
+  // Progressive blur — Android API 31+ only
+  progressiveBlurDirection?: string;
+  progressiveStartIntensity?: Float;
+  progressiveEndIntensity?: Float;
+
+  // Noise grain overlay — Android API 31+ only
+  noiseFactor?: Float;
 }
 
 export default codegenNativeComponent<NativeBlurVibeViewProps>(
