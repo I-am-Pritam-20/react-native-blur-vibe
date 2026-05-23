@@ -337,6 +337,30 @@ class BlurVibeViewApi31(context: Context) : ReactViewGroup(context) {
     noiseFactor = factor.coerceIn(0f, 1f); invalidate()
   }
 
+  fun setEnabled(enabled: Boolean) {
+    if (!enabled) {
+      blurRoot?.viewTreeObserver?.removeOnPreDrawListener(preDrawListener)
+      Choreographer.getInstance().removeFrameCallback(frameCallback)
+      frameScheduled = false
+      blurNode.discardDisplayList()
+      contentNode.discardDisplayList()
+      invalidate()
+    } else {
+      blurRoot?.viewTreeObserver?.addOnPreDrawListener(preDrawListener)
+      scheduleFrame()
+    }
+  }
+
+  fun setAutoUpdate(autoUpdate: Boolean) {
+    if (autoUpdate) {
+      blurRoot?.viewTreeObserver?.addOnPreDrawListener(preDrawListener)
+    } else {
+      blurRoot?.viewTreeObserver?.removeOnPreDrawListener(preDrawListener)
+      Choreographer.getInstance().removeFrameCallback(frameCallback)
+      frameScheduled = false
+    }
+  }
+
   // ── Helpers ────────────────────────────────────────────────────────────────
 
   private fun scheduleFrame() {

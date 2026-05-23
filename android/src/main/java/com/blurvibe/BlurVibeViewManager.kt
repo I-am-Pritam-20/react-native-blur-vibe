@@ -2,29 +2,47 @@ package com.blurvibe
 
 import android.os.Build
 import android.view.ViewGroup
+import com.facebook.react.bridge.ReactApplicationContext
+import com.facebook.react.module.annotations.ReactModule
+import com.facebook.react.uimanager.SimpleViewManager
 import com.facebook.react.uimanager.ThemedReactContext
-import com.facebook.react.uimanager.ViewGroupManager
+import com.facebook.react.uimanager.ViewManagerDelegate
 import com.facebook.react.uimanager.annotations.ReactProp
+import com.facebook.react.viewmanagers.BlurVibeViewManagerDelegate
+import com.facebook.react.viewmanagers.BlurVibeViewManagerInterface
 
 /**
  * BlurVibeViewManager
  *
- * Extends ViewGroupManager<ViewGroup> so that both BlurVibeView (which extends
- * BlurViewGroup, not ReactViewGroup) and BlurVibeViewApi31 (which extends
- * ReactViewGroup) satisfy the type bound.
+ * Supports BOTH Old Architecture (Paper) and New Architecture (Fabric):
  *
- * @ReactProp handlers receive ViewGroup and smart-cast via `when`.
+ * Old Arch: React Native calls @ReactProp methods directly via reflection.
+ * New Arch: React Native calls the generated BlurVibeViewManagerDelegate,
+ *           which forwards to our BlurVibeViewManagerInterface implementation.
  *
- * Naming rules to avoid supertype collisions on the VIEW classes:
- *   Manager method       → View method called
- *   setBlurBorderRadius  → applyBorderRadius   (ReactViewGroup has setBorderRadius)
- *   setBlurRadiusProp    → setBlurRadius        (unique name on BlurVibeView)
- *   setOverlayColorProp  → setOverlayColor      (unique — not in ReactViewGroup)
- *   setBlurTypeProp      → no-op
+ * The dual-arch pattern (SimpleViewManager + ViewManagerDelegate + Interface)
+ * is the official React Native recommended approach for library interop.
+ * Reference: https://reactnative.dev/docs/the-new-architecture/backward-compatibility-with-libraries
+ *
+ * Type param is ViewGroup — lowest common supertype of:
+ *   BlurVibeViewApi31 (extends ReactViewGroup extends ViewGroup)
+ *   BlurVibeView      (extends ReactViewGroup extends ViewGroup)
+ *
+ * Naming rules (prevent supertype method hiding):
+ *   setBlurBorderRadius → not setBorderRadius (BaseViewManager has it)
+ *   setBlurRadiusProp   → not setBlurRadius   (safety)
+ *   setBlurTypeProp     → not setBlurType      (safety)
+ *   setOverlayColorProp → not setOverlayColor  (safety)
  */
-class BlurVibeViewManager : ViewGroupManager<ViewGroup>() {
+@ReactModule(name = BlurVibeViewManager.NAME)
+class BlurVibeViewManager : SimpleViewManager<ViewGroup>(),
+  BlurVibeViewManagerInterface<ViewGroup> {
 
-  override fun getName() = "BlurVibeView"
+  private val delegate = BlurVibeViewManagerDelegate(this)
+
+  override fun getDelegate(): ViewManagerDelegate<ViewGroup> = delegate
+
+  override fun getName(): String = NAME
 
   override fun createViewInstance(context: ThemedReactContext): ViewGroup =
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) BlurVibeViewApi31(context)
@@ -33,7 +51,7 @@ class BlurVibeViewManager : ViewGroupManager<ViewGroup>() {
   // ── Core props ─────────────────────────────────────────────────────────────
 
   @ReactProp(name = "blurAmount", defaultFloat = 10f)
-  fun setBlurAmount(view: ViewGroup, amount: Float) {
+  override fun setBlurAmount(view: ViewGroup, amount: Float) {
     when (view) {
       is BlurVibeViewApi31 -> view.setBlurAmount(amount)
       is BlurVibeView      -> view.setBlurAmount(amount)
@@ -41,8 +59,8 @@ class BlurVibeViewManager : ViewGroupManager<ViewGroup>() {
   }
 
   @ReactProp(name = "blurType")
-  fun setBlurTypeProp(view: ViewGroup, @Suppress("UNUSED_PARAMETER") type: String?) {
-    // iOS UIBlurEffectStyle only — no-op on Android
+  fun setBlurTypeProp(view: ViewGroup, type: String?) {
+    // iOS UIBlurEffectStyle — no-op on Android
   }
 
   @ReactProp(name = "overlayColor")
@@ -54,7 +72,7 @@ class BlurVibeViewManager : ViewGroupManager<ViewGroup>() {
   }
 
   @ReactProp(name = "reducedTransparencyFallbackColor")
-  fun setReducedTransparencyFallbackColor(view: ViewGroup, color: String?) {
+  override fun setReducedTransparencyFallbackColor(view: ViewGroup, color: String?) {
     when (view) {
       is BlurVibeViewApi31 -> view.setReducedTransparencyFallbackColor(color)
       is BlurVibeView      -> view.setReducedTransparencyFallbackColor(color)
@@ -63,42 +81,74 @@ class BlurVibeViewManager : ViewGroupManager<ViewGroup>() {
 
   @ReactProp(name = "blurRadius", defaultInt = 4)
   fun setBlurRadiusProp(view: ViewGroup, radius: Int) {
-    // API < 31 only — QmBlurView downsample factor
-    // API 31+ uses full-res RenderNode, downsample irrelevant
     if (view is BlurVibeView) view.setBlurRadius(radius)
+  }
+
+  @ReactProp(name = "enabled", defaultBoolean = true)
+  override fun setEnabled(view: ViewGroup, enabled: Boolean) {
+    when (view) {
+      is BlurVibeViewApi31 -> view.setEnabled(enabled)
+      is BlurVibeView      -> view.setEnabled(enabled)
+    }
+  }
+
+  @ReactProp(name = "autoUpdate", defaultBoolean = true)
+  override fun setAutoUpdate(view: ViewGroup, autoUpdate: Boolean) {
+    when (view) {
+      is BlurVibeViewApi31 -> view.setAutoUpdate(autoUpdate)
+      is BlurVibeView      -> view.setAutoUpdate(autoUpdate)
+    }
   }
 
   @ReactProp(name = "borderRadius", defaultFloat = 0f)
   fun setBlurBorderRadius(view: ViewGroup, radius: Float) {
     when (view) {
-      is BlurVibeViewApi31 -> view.applyBorderRadius(radius)   // renamed — avoids ReactViewGroup.setBorderRadius
+      is BlurVibeViewApi31 -> view.applyBorderRadius(radius)
       is BlurVibeView      -> view.setBorderRadius(radius)
     }
   }
 
-  // ── Progressive blur props (API 31+ only) ──────────────────────────────────
+  // ── Progressive blur (API 31+ only) ───────────────────────────────────────
 
   @ReactProp(name = "progressiveBlurDirection")
-  fun setProgressiveBlurDirection(view: ViewGroup, direction: String?) {
+  override fun setProgressiveBlurDirection(view: ViewGroup, direction: String?) {
     if (view is BlurVibeViewApi31) view.setProgressiveBlurDirection(direction)
   }
 
   @ReactProp(name = "progressiveStartIntensity", defaultFloat = 1f)
-  fun setProgressiveStartIntensity(view: ViewGroup, intensity: Float) {
+  override fun setProgressiveStartIntensity(view: ViewGroup, intensity: Float) {
     if (view is BlurVibeViewApi31) view.setProgressiveStartIntensity(intensity)
   }
 
   @ReactProp(name = "progressiveEndIntensity", defaultFloat = 0f)
-  fun setProgressiveEndIntensity(view: ViewGroup, intensity: Float) {
+  override fun setProgressiveEndIntensity(view: ViewGroup, intensity: Float) {
     if (view is BlurVibeViewApi31) view.setProgressiveEndIntensity(intensity)
   }
 
-  // ── Noise prop (API 31+ only) ──────────────────────────────────────────────
+  // ── Noise (API 31+ only) ──────────────────────────────────────────────────
 
   @ReactProp(name = "noiseFactor", defaultFloat = 0.08f)
-  fun setNoiseFactorProp(view: ViewGroup, factor: Float) {
+  override fun setNoiseFactor(view: ViewGroup, factor: Float) {
     if (view is BlurVibeViewApi31) view.setNoiseFactor(factor)
   }
 
+  // ── Interface methods not mapped to @ReactProp (required by codegen) ───────
+
+  override fun setBlurRadius(view: ViewGroup, radius: Int) {
+    if (view is BlurVibeView) view.setBlurRadius(radius)
+  }
+
+  override fun setBlurType(view: ViewGroup, type: String?) {
+    // iOS only — no-op
+  }
+
+  override fun setOverlayColor(view: ViewGroup, color: String?) {
+    setOverlayColorProp(view, color)
+  }
+
   override fun needsCustomLayoutForChildren(): Boolean = false
+
+  companion object {
+    const val NAME = "BlurVibeView"
+  }
 }

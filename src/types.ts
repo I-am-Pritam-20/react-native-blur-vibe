@@ -88,7 +88,7 @@ export type BlurType =
  * | `"leftToRight"`  | Left edge      | Right edge     |
  * | `"rightToLeft"`  | Right edge     | Left edge      |
  * | `"radial"`       | Center         | Outer edges    |
- * | `"none"`         | — uniform blur — no gradient    |
+ * | `"none"`         | — uniform blur — no gradient   |
  *
  * @example
  * // Sticky header: full blur at top, invisible at bottom
@@ -312,3 +312,30 @@ export interface BlurViewProps extends ViewProps {
    */
   noiseFactor?: number;
 }
+
+  // ─── New in this version ───────────────────────────────────────────────────
+
+  /**
+   * Enable or disable the blur effect entirely.
+   *
+   * When `false`, the view renders as transparent (or with `reducedTransparencyFallbackColor`).
+   * Useful for conditional blur based on scroll position or state.
+   *
+   * **Works on both iOS and Android.**
+   *
+   * @default true
+   */
+  enabled?: boolean;
+
+  /**
+   * Automatically re-blur when the content behind the view changes.
+   *
+   * When `false`, the blur is captured once and frozen. Use for static
+   * backgrounds where the content never changes (e.g. a blurred album art card
+   * that doesn't update). Saves significant CPU/GPU on Android API < 31.
+   *
+   * **Works on both iOS and Android.**
+   *
+   * @default true
+   */
+  autoUpdate?: boolean;

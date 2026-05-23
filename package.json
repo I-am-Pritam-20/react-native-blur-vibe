@@ -50,6 +50,10 @@
     "react-native",
     "blur",
     "blurview",
+    "blurvibe",
+    "blureffect",
+    "react-native-blur-vibe",
+    "blur-vibe",
     "glassmorphism",
     "ios",
     "android",
@@ -123,10 +127,15 @@
   },
   "codegenConfig": {
     "name": "BlurVibeSpec",
-    "type": "components",
+    "type": "all",
     "jsSrcsDir": "src",
     "android": {
       "javaPackageName": "com.blurvibe"
+    },
+    "ios": {
+      "componentProvider": {
+        "BlurVibeView": "BlurVibeViewFabric"
+      }
     }
   },
   "prettier": {

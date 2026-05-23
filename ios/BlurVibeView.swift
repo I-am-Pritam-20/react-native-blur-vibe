@@ -24,6 +24,8 @@ class BlurVibeView: UIView {
   @objc var progressiveStartIntensity: NSNumber = 1.0   { didSet { updateView() } }
   @objc var progressiveEndIntensity: NSNumber   = 0.0   { didSet { updateView() } }
   @objc var noiseFactor: NSNumber               = 0.08  { didSet { updateView() } }
+  @objc var enabled: NSNumber                    = 1     { didSet { updateView() } }
+  @objc var autoUpdate: NSNumber                 = 1     { didSet { updateView() } }
 
   // MARK: - Init
 

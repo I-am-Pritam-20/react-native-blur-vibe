@@ -1,34 +1,64 @@
-// @ts-ignore - internal RN path, exists at runtime
+import type { ColorValue, ViewProps } from 'react-native';
+import type {
+  WithDefault,
+  Float,
+  Int32,
+} from 'react-native/Libraries/Types/CodegenTypes';
 import codegenNativeComponent from 'react-native/Libraries/Utilities/codegenNativeComponent';
-import type { HostComponent, ViewProps } from 'react-native';
-// @ts-ignore - internal RN path, exists at runtime
-import type { Float, Int32 } from 'react-native/Libraries/Types/CodegenTypes';
+import type { HostComponent } from 'react-native';
 
-export interface NativeBlurVibeViewProps extends ViewProps {
-  // 0–100 blur intensity
-  blurAmount?: Float;
+/**
+ * Codegen spec for BlurVibeView.
+ *
+ * type: "all" in codegenConfig (package.json) makes this work on BOTH:
+ *   - Old Architecture (Paper / RCTViewManager)
+ *   - New Architecture (Fabric / RCTViewComponentView)
+ *
+ * Prop types must use WithDefault<T, default> for scalars — codegen requires this.
+ * Colors use ColorValue so Fabric passes a SharedColor (C++ type) on New Arch,
+ * and an NSNumber/Int on Old Arch.
+ */
+interface NativeProps extends ViewProps {
+  // ── Core props ────────────────────────────────────────────────────────────
 
-  // iOS UIBlurEffectStyle name — no-op on Android
+  /** Blur intensity 0–100 */
+  blurAmount?: WithDefault<Float, 10>;
+
+  /** iOS UIBlurEffectStyle — no-op on Android */
   blurType?: string;
 
-  // Hex color string with alpha — "transparent", "#RGB", "#RRGGBB", "#RRGGBBAA"
+  /** Hex RGBA overlay color — "transparent", "#RGB", "#RRGGBB", "#RRGGBBAA" */
   overlayColor?: string;
 
-  // Fallback when blur unavailable
+  /** Fallback when blur unavailable (Reduce Transparency / API < 21) */
   reducedTransparencyFallbackColor?: string;
 
-  // Android API < 31 only: downsample factor 1–8
-  blurRadius?: Int32;
+  /** Android API < 31 downsample factor 1–8 */
+  blurRadius?: WithDefault<Int32, 4>;
 
-  // Progressive blur — Android API 31+ only
-  progressiveBlurDirection?: string;
-  progressiveStartIntensity?: Float;
-  progressiveEndIntensity?: Float;
+  /** Disable blur entirely */
+  enabled?: WithDefault<boolean, true>;
 
-  // Noise grain overlay — Android API 31+ only
-  noiseFactor?: Float;
+  /** Auto-update blur on content change */
+  autoUpdate?: WithDefault<boolean, true>;
+
+  // ── Progressive blur ──────────────────────────────────────────────────────
+
+  /** "none"|"topToBottom"|"bottomToTop"|"leftToRight"|"rightToLeft"|"radial" */
+  progressiveBlurDirection?: WithDefault<string, 'none'>;
+
+  /** Intensity at gradient start (0.0–1.0) */
+  progressiveStartIntensity?: WithDefault<Float, 1>;
+
+  /** Intensity at gradient end (0.0–1.0) */
+  progressiveEndIntensity?: WithDefault<Float, 0>;
+
+  // ── Noise ─────────────────────────────────────────────────────────────────
+
+  /** Noise grain strength (0.0–1.0). API 31+ and iOS only. */
+  noiseFactor?: WithDefault<Float, 0.08>;
 }
 
-export default codegenNativeComponent<NativeBlurVibeViewProps>(
+export default codegenNativeComponent<NativeProps>(
   'BlurVibeView'
-) as HostComponent<NativeBlurVibeViewProps>;
+) as HostComponent<NativeProps>;
