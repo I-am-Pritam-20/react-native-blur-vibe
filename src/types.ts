@@ -311,15 +311,15 @@ export interface BlurViewProps extends ViewProps {
    * @platform ios, android (API 31+)
    */
   noiseFactor?: number;
-}
 
-  // ─── New in this version ───────────────────────────────────────────────────
+  // ─── Blur control ──────────────────────────────────────────────────────────
 
   /**
-   * Enable or disable the blur effect entirely.
+   * Enable or disable the blur effect.
    *
-   * When `false`, the view renders as transparent (or with `reducedTransparencyFallbackColor`).
-   * Useful for conditional blur based on scroll position or state.
+   * When `false`, the view renders as transparent (showing
+   * `reducedTransparencyFallbackColor` if set). Useful for toggling blur
+   * based on scroll position, performance mode, or user preference.
    *
    * **Works on both iOS and Android.**
    *
@@ -328,14 +328,16 @@ export interface BlurViewProps extends ViewProps {
   enabled?: boolean;
 
   /**
-   * Automatically re-blur when the content behind the view changes.
+   * Automatically re-capture and re-blur when the content behind changes.
    *
-   * When `false`, the blur is captured once and frozen. Use for static
-   * backgrounds where the content never changes (e.g. a blurred album art card
-   * that doesn't update). Saves significant CPU/GPU on Android API < 31.
+   * When `false`, the blur is captured once at mount and never updated.
+   * Use this for completely static backgrounds (e.g. a blurred album art
+   * card where the image never changes) — eliminates all per-frame cost
+   * on Android API < 31.
    *
    * **Works on both iOS and Android.**
    *
    * @default true
    */
   autoUpdate?: boolean;
+}

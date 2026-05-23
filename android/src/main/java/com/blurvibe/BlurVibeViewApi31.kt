@@ -337,7 +337,7 @@ class BlurVibeViewApi31(context: Context) : ReactViewGroup(context) {
     noiseFactor = factor.coerceIn(0f, 1f); invalidate()
   }
 
-  fun setEnabled(enabled: Boolean) {
+  fun applyBlurEnabled(enabled: Boolean) {
     if (!enabled) {
       blurRoot?.viewTreeObserver?.removeOnPreDrawListener(preDrawListener)
       Choreographer.getInstance().removeFrameCallback(frameCallback)

@@ -85,7 +85,7 @@ class BlurVibeView(context: Context) : ReactViewGroup(context) {
     // Could expose downsampleFactor setter on controller if needed
   }
 
-  fun setBorderRadius(radiusDp: Float) {
+  fun applyBorderRadius(radiusDp: Float) {
     cornerRadiusPx = TypedValue.applyDimension(
       TypedValue.COMPLEX_UNIT_DIP, radiusDp, context.resources.displayMetrics
     )
@@ -100,7 +100,7 @@ class BlurVibeView(context: Context) : ReactViewGroup(context) {
 
   fun setReducedTransparencyFallbackColor(@Suppress("UNUSED_PARAMETER") color: String?) { }
 
-  fun setEnabled(enabled: Boolean) {
+  fun applyBlurEnabled(enabled: Boolean) {
     blurController?.enabled = enabled
     if (!enabled) invalidate()
   }

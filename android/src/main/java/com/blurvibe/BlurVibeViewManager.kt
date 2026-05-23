@@ -87,8 +87,8 @@ class BlurVibeViewManager : SimpleViewManager<ViewGroup>(),
   @ReactProp(name = "enabled", defaultBoolean = true)
   override fun setEnabled(view: ViewGroup, enabled: Boolean) {
     when (view) {
-      is BlurVibeViewApi31 -> view.setEnabled(enabled)
-      is BlurVibeView      -> view.setEnabled(enabled)
+      is BlurVibeViewApi31 -> view.applyBlurEnabled(enabled)
+      is BlurVibeView      -> view.applyBlurEnabled(enabled)
     }
   }
 
@@ -104,7 +104,7 @@ class BlurVibeViewManager : SimpleViewManager<ViewGroup>(),
   fun setBlurBorderRadius(view: ViewGroup, radius: Float) {
     when (view) {
       is BlurVibeViewApi31 -> view.applyBorderRadius(radius)
-      is BlurVibeView      -> view.setBorderRadius(radius)
+      is BlurVibeView      -> view.applyBorderRadius(radius)
     }
   }
 
@@ -146,7 +146,6 @@ class BlurVibeViewManager : SimpleViewManager<ViewGroup>(),
     setOverlayColorProp(view, color)
   }
 
-  override fun needsCustomLayoutForChildren(): Boolean = false
 
   companion object {
     const val NAME = "BlurVibeView"
