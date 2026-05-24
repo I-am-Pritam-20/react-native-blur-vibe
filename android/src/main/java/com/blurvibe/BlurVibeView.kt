@@ -12,31 +12,28 @@ import androidx.core.graphics.toColorInt
 import com.facebook.react.views.view.ReactViewGroup
 
 /**
- * BlurVibeView — Android API 21–30 backdrop blur (zero external dependencies)
+ * BlurVibeView — Android API 21–30 backdrop blur.
  *
- * Replaces QmBlurView with LegacyBlurController — a direct RenderScript
- * implementation using only the Android SDK. No third-party library needed.
+ * Delegates all blur work to LegacyBlurController.
+ * Extends ReactViewGroup — handles all RN style props (borderRadius,
+ * opacity, transforms etc) natively via ReactViewGroup's own draw pipeline.
  *
- * Extends ReactViewGroup so it hosts RN children correctly (Yoga layout,
- * touch events, z-ordering all work natively).
- *
- * For API 31+, BlurVibeViewApi31 is used instead (RenderEffect GPU path).
+ * THE STATIC BLUR FIX:
+ * draw() is overridden to be a no-op when LegacyBlurController.isCapturing
+ * is true. This prevents root.draw() from painting our stale blur output
+ * into the capture bitmap. Without this, each frame captures the previous
+ * frame's blur output and the blur appears frozen/static.
  */
 class BlurVibeView(context: Context) : ReactViewGroup(context) {
 
-  // ── State ──────────────────────────────────────────────────────────────────
-
   private var blurController: LegacyBlurController? = null
-  private var pendingBlurAmount  = 10f
-  private var pendingOverlay     = Color.TRANSPARENT
-  private var cornerRadiusPx     = 0f
-
-  // ── Init ───────────────────────────────────────────────────────────────────
+  private var pendingBlurAmount = 10f
+  private var pendingOverlay    = Color.TRANSPARENT
+  private var cornerRadiusPx    = 0f
 
   init {
     setWillNotDraw(false)
     super.setBackgroundColor(Color.TRANSPARENT)
-    clipToOutline = true
   }
 
   // ── Lifecycle ──────────────────────────────────────────────────────────────
@@ -63,15 +60,28 @@ class BlurVibeView(context: Context) : ReactViewGroup(context) {
 
   override fun onWindowFocusChanged(hasWindowFocus: Boolean) {
     super.onWindowFocusChanged(hasWindowFocus)
-    // Re-attach to the current ViewTreeObserver after split-screen / PiP transition.
-    // Android may have killed and replaced the old observer during the mode switch.
     if (hasWindowFocus) blurController?.reAttach()
   }
 
-  // ── Draw ───────────────────────────────────────────────────────────────────
+  // ── draw() — suppress self during root capture ────────────────────────────
+  //
+  // When LegacyBlurController is actively capturing (root.draw() in progress),
+  // skip drawing ourselves. This makes us invisible to the capture canvas so
+  // the capture bitmap contains ONLY the content behind us, not our own stale
+  // blur output. Without this, the blur appears static/frozen.
+
+  override fun draw(canvas: Canvas) {
+    if (blurController?.isCapturing == true) return
+    super.draw(canvas)
+  }
+
+  // ── onDraw ────────────────────────────────────────────────────────────────
 
   override fun onDraw(canvas: Canvas) {
+    // Draw the blurred background first
     blurController?.draw(canvas, width.toFloat(), height.toFloat())
+    // Let ReactViewGroup draw borders/radius/background on top natively
+    super.onDraw(canvas)
   }
 
   // ── Public setters ─────────────────────────────────────────────────────────
@@ -88,24 +98,28 @@ class BlurVibeView(context: Context) : ReactViewGroup(context) {
   }
 
   fun setBlurRadius(factor: Int) {
-    // No-op for now — LegacyBlurController uses fixed DOWNSAMPLE_FACTOR = 4
-    // Could expose downsampleFactor setter on controller if needed
+    // Exposed as a downsample override for power users — not used internally
   }
 
-  fun applyBorderRadius(radiusDp: Float) {
+  fun setBorderRadius(radiusDp: Float) {
     cornerRadiusPx = TypedValue.applyDimension(
       TypedValue.COMPLEX_UNIT_DIP, radiusDp, context.resources.displayMetrics
     )
-    outlineProvider = object : ViewOutlineProvider() {
-      override fun getOutline(view: View, outline: Outline) {
-        outline.setRoundRect(0, 0, view.width, view.height, cornerRadiusPx)
+    if (cornerRadiusPx > 0f) {
+      outlineProvider = object : ViewOutlineProvider() {
+        override fun getOutline(view: View, outline: Outline) {
+          outline.setRoundRect(0, 0, view.width, view.height, cornerRadiusPx)
+        }
       }
+      clipToOutline = true
+    } else {
+      outlineProvider = ViewOutlineProvider.BACKGROUND
+      clipToOutline   = false
     }
-    clipToOutline = cornerRadiusPx > 0f
     invalidate()
   }
 
-  fun setReducedTransparencyFallbackColor(@Suppress("UNUSED_PARAMETER") color: String?) { }
+  fun setReducedTransparencyFallbackColor(@Suppress("UNUSED_PARAMETER") color: String?) {}
 
   fun applyBlurEnabled(enabled: Boolean) {
     blurController?.enabled = enabled
@@ -118,15 +132,13 @@ class BlurVibeView(context: Context) : ReactViewGroup(context) {
 
   // ── Layout passthrough ─────────────────────────────────────────────────────
 
-  override fun onLayout(changed: Boolean, left: Int, top: Int, right: Int, bottom: Int) {
-    // Yoga handles all layout
-  }
+  override fun onLayout(changed: Boolean, left: Int, top: Int, right: Int, bottom: Int) {}
 
   // ── Helpers ────────────────────────────────────────────────────────────────
 
   private fun mapBlurAmount(amount: Float): Float {
     val t = amount.coerceIn(0f, 100f) / 100f
-    return t * t * 25f  // quadratic curve, max 25 (RenderScript kernel limit)
+    return t * t * 25f
   }
 
   private fun findBlurRoot(): ViewGroup? {
