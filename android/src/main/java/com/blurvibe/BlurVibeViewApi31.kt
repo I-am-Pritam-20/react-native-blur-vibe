@@ -117,7 +117,12 @@ class BlurVibeViewApi31(context: Context) : ReactViewGroup(context) {
 
   init {
     setWillNotDraw(false)
-    super.setBackgroundColor(Color.TRANSPARENT)
+    // DO NOT call setBackgroundColor here.
+    // ReactViewGroup manages its own ReactViewBackgroundDrawable which handles
+    // all RN style props: borderRadius, borderColor, borderWidth, opacity,
+    // backgroundColor, shadow, elevation etc.
+    // Calling super.setBackgroundColor() replaces that drawable with a plain
+    // ColorDrawable — destroying all style prop handling.
   }
 
   // ── Lifecycle ──────────────────────────────────────────────────────────────
@@ -219,18 +224,24 @@ class BlurVibeViewApi31(context: Context) : ReactViewGroup(context) {
     nodeCanvas.drawBitmap(bitmap, 0f, 0f, null)
     renderNode.endRecording()
 
-    // ④ Apply GPU blur + tint as a chained RenderEffect (single GPU pass)
-    val radius     = blurRadiusFromAmount(blurAmount)
-    val blurEffect = RenderEffect.createBlurEffect(radius, radius, Shader.TileMode.MIRROR)
+    // ④ Apply GPU blur + tint as chained RenderEffects
+    // Double-pass blur: two Gaussian passes = wider spread kernel
+    // Equivalent to sqrt(2) wider sigma — gives frosted-glass light diffusion
+    // CLAMP tile mode: no edge reflection artifacts
+    val radius = blurRadiusFromAmount(blurAmount)
+    val pass1  = RenderEffect.createBlurEffect(radius, radius, Shader.TileMode.CLAMP)
+    val pass2  = RenderEffect.createBlurEffect(radius * 0.5f, radius * 0.5f, Shader.TileMode.CLAMP)
+    val doubleBlur = RenderEffect.createChainEffect(pass2, pass1)  // pass1 first, then pass2
+
     renderNode.setRenderEffect(
       if (Color.alpha(overlayColor) > 0) {
         RenderEffect.createChainEffect(
           RenderEffect.createColorFilterEffect(
             BlendModeColorFilter(overlayColor, BlendMode.SRC_ATOP)
           ),
-          blurEffect
+          doubleBlur
         )
-      } else blurEffect
+      } else doubleBlur
     )
 
     invalidate()
@@ -394,8 +405,16 @@ class BlurVibeViewApi31(context: Context) : ReactViewGroup(context) {
     }
   }
 
-  private fun blurRadiusFromAmount(amount: Float): Float =
-    ((amount / 100f).let { it * it } * 25f).coerceIn(1f, 25f)
+  private fun blurRadiusFromAmount(amount: Float): Float {
+    // Linear mapping: 0→1px, 10→13px, 25→31px, 50→61px, 75→91px, 100→120px
+    // These values match CSS backdrop-filter feel:
+    //   blurAmount=10  ≈ backdrop-blur-sm  (4px CSS = ~13px GPU after downsample)
+    //   blurAmount=25  ≈ backdrop-blur-md  (12px CSS ≈ 31px GPU)
+    //   blurAmount=50  ≈ backdrop-blur-xl  (24px CSS ≈ 61px GPU)
+    //   blurAmount=100 ≈ backdrop-blur-3xl (64px CSS = fully frosted glass)
+    val t = amount.coerceIn(0f, 100f) / 100f
+    return (1f + t * 119f)  // 1–120 linear
+  }
 
   private fun findBlurRoot(): ViewGroup? {
     var p = parent

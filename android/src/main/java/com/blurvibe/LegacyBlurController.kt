@@ -33,9 +33,17 @@ internal class LegacyBlurController(
 ) {
 
   companion object {
-    private const val DOWNSAMPLE_FACTOR = 4f
-    private const val BLUR_RADIUS       = 8f
-    private const val BLUR_ROUNDS       = 2
+    // DOWNSAMPLE_FACTOR = 2: capture at 1/4 pixels (less than before).
+    // Less downsampling = higher quality capture = crisper blur result.
+    // The blur hides pixel detail so 1/4 is the sweet spot.
+    private const val DOWNSAMPLE_FACTOR = 2f
+
+    // Default radius when blurAmount maps here.
+    // The actual radius per frame comes from view.blurRadius set by setBlurAmount().
+    private const val BLUR_RADIUS = 25f  // max RenderScript kernel
+
+    // 3 rounds: more passes = wider spread = true frosted glass feel
+    private const val BLUR_ROUNDS = 3
   }
 
   // ── Bitmap pool ────────────────────────────────────────────────────────────

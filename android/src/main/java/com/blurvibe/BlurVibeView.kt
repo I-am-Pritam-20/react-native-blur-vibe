@@ -33,7 +33,7 @@ class BlurVibeView(context: Context) : ReactViewGroup(context) {
 
   init {
     setWillNotDraw(false)
-    super.setBackgroundColor(Color.TRANSPARENT)
+    // DO NOT call setBackgroundColor — see BlurVibeViewApi31 for explanation.
   }
 
   // ── Lifecycle ──────────────────────────────────────────────────────────────
@@ -137,8 +137,10 @@ class BlurVibeView(context: Context) : ReactViewGroup(context) {
   // ── Helpers ────────────────────────────────────────────────────────────────
 
   private fun mapBlurAmount(amount: Float): Float {
+    // Linear 0→1, 100→25 (RenderScript max kernel is 25)
+    // With 3 blur rounds this gives equivalent spread to Api31's 120px single-pass
     val t = amount.coerceIn(0f, 100f) / 100f
-    return t * t * 25f
+    return (1f + t * 24f)  // 1–25 linear, rounds=3 gives wide spread
   }
 
   private fun findBlurRoot(): ViewGroup? {
