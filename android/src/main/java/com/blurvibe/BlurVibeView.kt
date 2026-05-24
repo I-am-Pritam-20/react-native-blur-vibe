@@ -61,6 +61,13 @@ class BlurVibeView(context: Context) : ReactViewGroup(context) {
     blurController?.onSizeChanged()
   }
 
+  override fun onWindowFocusChanged(hasWindowFocus: Boolean) {
+    super.onWindowFocusChanged(hasWindowFocus)
+    // Re-attach to the current ViewTreeObserver after split-screen / PiP transition.
+    // Android may have killed and replaced the old observer during the mode switch.
+    if (hasWindowFocus) blurController?.reAttach()
+  }
+
   // ── Draw ───────────────────────────────────────────────────────────────────
 
   override fun onDraw(canvas: Canvas) {

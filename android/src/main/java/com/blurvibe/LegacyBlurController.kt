@@ -73,7 +73,7 @@ internal class LegacyBlurController(
   var autoUpdate:   Boolean = true
     set(value) {
       field = value
-      if (value) rootView.viewTreeObserver.addOnPreDrawListener(preDrawListener)
+      if (value) safeAddPreDrawListener()
       else rootView.viewTreeObserver.removeOnPreDrawListener(preDrawListener)
     }
 
@@ -99,7 +99,7 @@ internal class LegacyBlurController(
 
   init {
     initRenderScript()
-    rootView.viewTreeObserver.addOnPreDrawListener(preDrawListener)
+    safeAddPreDrawListener()
   }
 
   private fun initRenderScript() {
@@ -205,6 +205,26 @@ internal class LegacyBlurController(
     scaledBitmap?.recycle();  scaledBitmap  = null
     inputAlloc?.destroy();    inputAlloc    = null
     outputAlloc?.destroy();   outputAlloc   = null
+  }
+
+  // ── Multi-window / split-screen / PiP safety ──────────────────────────────
+  //
+  // Called by BlurVibeView.onWindowFocusChanged(hasFocus=true).
+  // Re-attaches the preDrawListener to the rootView's current
+  // (possibly newly created) ViewTreeObserver after a window mode transition.
+
+  fun reAttach() {
+    if (enabled && autoUpdate) {
+      safeAddPreDrawListener()
+    }
+  }
+
+  private fun safeAddPreDrawListener() {
+    val vto = rootView.viewTreeObserver
+    vto.removeOnPreDrawListener(preDrawListener)  // no-op if not attached
+    if (vto.isAlive) {
+      vto.addOnPreDrawListener(preDrawListener)
+    }
   }
 
   fun destroy() {

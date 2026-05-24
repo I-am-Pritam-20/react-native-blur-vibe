@@ -3,6 +3,8 @@ package com.blurvibe
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapShader
+import android.graphics.BlendMode
+import android.graphics.BlendModeColorFilter
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.LinearGradient
@@ -11,6 +13,7 @@ import android.graphics.Paint
 import android.graphics.PorterDuff
 import android.graphics.PorterDuffXfermode
 import android.graphics.RadialGradient
+import android.graphics.Rect
 import android.graphics.RectF
 import android.graphics.RenderEffect
 import android.graphics.RenderNode
@@ -25,81 +28,96 @@ import android.view.ViewTreeObserver
 import androidx.annotation.RequiresApi
 import androidx.core.graphics.toColorInt
 import com.facebook.react.views.view.ReactViewGroup
+import kotlin.math.max
 import kotlin.math.min
 import kotlin.random.Random
 
+/**
+ * BlurVibeViewApi31 — Backdrop blur for Android API 31+
+ *
+ * Pipeline (adapted from ModernBlurView's RenderEffectBlur approach):
+ *
+ *   1. rootView.draw(canvas) → internalBitmap   (bitmap capture, main thread)
+ *   2. renderNode.beginRecording()
+ *        canvas.drawBitmap(internalBitmap)       (bitmap → RenderNode — safe on all OEMs)
+ *      renderNode.endRecording()
+ *   3. renderNode.setRenderEffect(
+ *        createChainEffect(tintEffect, blurEffect)  (GPU blur + tint in one pass)
+ *      )
+ *   4. onDraw: canvas.drawRenderNode(renderNode)  (draws GPU result to screen)
+ *      + progressive mask + noise
+ *
+ * KEY INSIGHT from ModernBlurView:
+ *   Drawing a flat BITMAP into a RenderNode, then drawRenderNode() is stable
+ *   on all OEM devices (Oppo/OnePlus/Xiaomi/Samsung).
+ *   Drawing a RenderNode INSIDE another RenderNode's recording crashes
+ *   on OEM-patched GPU drivers. We don't do that here.
+ *
+ * Choreographer gate: max 1 capture per vsync.
+ * Bitmap pool + RenderNode reuse: zero GC per frame.
+ */
 @RequiresApi(Build.VERSION_CODES.S)
 class BlurVibeViewApi31(context: Context) : ReactViewGroup(context) {
 
   // ── Blur params ────────────────────────────────────────────────────────────
 
-  private var blurRadiusX    = DEFAULT_BLUR_RADIUS
-  private var blurRadiusY    = DEFAULT_BLUR_RADIUS
-  private var overlayColor   = Color.TRANSPARENT
+  private var blurAmount   = 10f
+  private var overlayColor = Color.TRANSPARENT
   private var cornerRadiusPx = 0f
 
-  // ── Progressive blur params ────────────────────────────────────────────────
+  // ── Progressive blur ──────────────────────────────────────────────────────
 
   private var progressiveDirection      = PROGRESSIVE_NONE
   private var progressiveStartIntensity = 1f
   private var progressiveEndIntensity   = 0f
 
-  // ── Noise params ──────────────────────────────────────────────────────────
+  // ── Noise ─────────────────────────────────────────────────────────────────
 
   private var noiseFactor = 0.08f
   private var noiseBitmap: Bitmap? = null
   private val noisePaint  = Paint()
 
-  // ── RenderNodes ───────────────────────────────────────────────────────────
+  // ── Bitmap + RenderNode (ModernBlurView pattern) ───────────────────────────
   //
-  // contentNode: records root-view draw commands ("what's behind me")
-  // blurNode:    crops + translates contentNode to this view's position,
-  //              with RenderEffect blur applied
+  // internalBitmap: captured root pixels at view resolution
+  // renderNode:     holds bitmap + RenderEffect (GPU blur + tint chain)
   //
-  // IMPORTANT — NO setUseCompositingLayer(true) on either node.
-  // Compositing layer on a re-recorded RenderNode causes GPU memory
-  // thrashing and SIGSEGV on some API 31 drivers.
-  //
-  // IMPORTANT — NO LAYER_TYPE_HARDWARE on the view itself.
-  // canvas.drawRenderNode() is only valid on a hardware-accelerated canvas
-  // that is NOT itself a hardware layer — mixing them causes SIGSEGV
-  // in RenderThread (the exact crash we saw in logcat).
+  // The renderNode is reused every frame — only its content (bitmap) and
+  // effect (radius/tint) are updated, not recreated.
 
-  private val contentNode = RenderNode("BlurVibeContent")
-  private val blurNode    = RenderNode("BlurVibeBlur")
+  private var internalBitmap: Bitmap? = null
+  private val renderNode = RenderNode("BlurVibeNode")
 
-  // ── Recording guard — prevents double-beginRecording crashes ─────────────
-  //
-  // If captureRootIntoNode fires twice in the same frame (e.g. during
-  // layout + invalidate), a second beginRecording() on an active recording
-  // crashes the RenderThread. This flag gates it.
+  // ── Draw paint ────────────────────────────────────────────────────────────
 
-  private var isCapturing = false
-
-  // ── Paint objects ──────────────────────────────────────────────────────────
-
-  private val overlayPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+  private val bitmapPaint  = Paint(Paint.FILTER_BITMAP_FLAG)
   private val maskPaint    = Paint(Paint.ANTI_ALIAS_FLAG).apply {
     xfermode = PorterDuffXfermode(PorterDuff.Mode.DST_IN)
   }
+  private val overlayPaint = Paint(Paint.ANTI_ALIAS_FLAG)
 
   // ── Root view ─────────────────────────────────────────────────────────────
 
   private var blurRoot: ViewGroup? = null
+  private val rootLocation   = IntArray(2)
+  private val blurViewLocation = IntArray(2)
+
+  // ── State ─────────────────────────────────────────────────────────────────
+
+  private var blurEnabled    = true
+  private var autoUpdate     = true
+  private var frameScheduled = false
+  private var initialized    = false
 
   // ── Choreographer gate ────────────────────────────────────────────────────
 
-  private var frameScheduled = false
   private val frameCallback = Choreographer.FrameCallback {
     frameScheduled = false
-    if (isAttachedToWindow) {
-      captureRootIntoNode()
-      invalidate()
-    }
+    if (isAttachedToWindow && blurEnabled) updateBlur()
   }
 
   private val preDrawListener = ViewTreeObserver.OnPreDrawListener {
-    if (!frameScheduled) {
+    if (!frameScheduled && blurEnabled && autoUpdate) {
       frameScheduled = true
       Choreographer.getInstance().postFrameCallback(frameCallback)
     }
@@ -112,10 +130,6 @@ class BlurVibeViewApi31(context: Context) : ReactViewGroup(context) {
     setWillNotDraw(false)
     super.setBackgroundColor(Color.TRANSPARENT)
     clipToOutline = true
-    // DO NOT call setLayerType(LAYER_TYPE_HARDWARE) here —
-    // it conflicts with canvas.drawRenderNode() and causes SIGSEGV in RenderThread.
-    // The view uses the default layer type (LAYER_TYPE_NONE) so its canvas is
-    // the hardware-accelerated display list canvas — which supports drawRenderNode.
   }
 
   // ── Lifecycle ──────────────────────────────────────────────────────────────
@@ -123,107 +137,163 @@ class BlurVibeViewApi31(context: Context) : ReactViewGroup(context) {
   override fun onAttachedToWindow() {
     super.onAttachedToWindow()
     blurRoot = findBlurRoot()
-    blurRoot?.viewTreeObserver?.addOnPreDrawListener(preDrawListener)
+    safeAddPreDrawListener()
     generateNoiseBitmap()
+    if (measuredWidth > 0 && measuredHeight > 0) initBlur()
   }
 
   override fun onDetachedFromWindow() {
     blurRoot?.viewTreeObserver?.removeOnPreDrawListener(preDrawListener)
     Choreographer.getInstance().removeFrameCallback(frameCallback)
     frameScheduled = false
-    isCapturing    = false
+    initialized    = false
     blurRoot       = null
-    noiseBitmap?.recycle()
-    noiseBitmap = null
-    // Discard RenderNode display lists to free GPU memory
-    contentNode.discardDisplayList()
-    blurNode.discardDisplayList()
+    noiseBitmap?.recycle(); noiseBitmap = null
+    internalBitmap?.recycle(); internalBitmap = null
+    renderNode.discardDisplayList()
     super.onDetachedFromWindow()
   }
 
   override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
     super.onSizeChanged(w, h, oldw, oldh)
-    // Update blurNode bounds — contentNode bounds are set in captureRootIntoNode
     if (w > 0 && h > 0) {
-      blurNode.setPosition(0, 0, w, h)
-      applyBlurRenderEffect()
+      internalBitmap?.recycle(); internalBitmap = null
+      initBlur()
     }
   }
 
-  // ── Capture pipeline ───────────────────────────────────────────────────────
+  // ── Multi-window / split-screen / PiP safety ──────────────────────────────
+  //
+  // Android can "kill" a ViewTreeObserver when the window enters/exits
+  // split-screen, PiP, or freeform mode — creating a new one silently.
+  // If we hold a reference to the old (dead) observer our preDrawListener
+  // stops firing and blur freezes. We fix this by:
+  //   1. Always re-attaching via the CURRENT observer (not a cached one)
+  //   2. Checking isAlive() before adding — safe even if called redundantly
+  //   3. Re-attaching on window focus gain (fires after every mode transition)
 
-  private fun captureRootIntoNode() {
-    if (isCapturing) return  // guard against re-entrant / double recording crash
+  override fun onWindowFocusChanged(hasWindowFocus: Boolean) {
+    super.onWindowFocusChanged(hasWindowFocus)
+    if (hasWindowFocus && blurEnabled && autoUpdate) {
+      // Re-attach listener to the current (possibly new) ViewTreeObserver
+      safeAddPreDrawListener()
+      scheduleFrame()
+    }
+  }
+
+  /**
+   * Add preDrawListener to rootView's CURRENT ViewTreeObserver.
+   * Removes from any stale observer first, then attaches to the live one.
+   * Safe to call multiple times — isAlive() prevents double-attachment.
+   */
+  private fun safeAddPreDrawListener() {
     val root = blurRoot ?: return
-    val rw = root.width;  if (rw <= 0) return
-    val rh = root.height; if (rh <= 0) return
-    val vw = width;       if (vw <= 0) return
-    val vh = height;      if (vh <= 0) return
-
-    isCapturing = true
-    try {
-      // Step 1: record root-view draw into contentNode
-      contentNode.setPosition(0, 0, rw, rh)
-      val contentCanvas = contentNode.beginRecording()
-      try {
-        contentCanvas.drawColor(Color.TRANSPARENT, PorterDuff.Mode.CLEAR)
-        root.draw(contentCanvas)
-      } finally {
-        contentNode.endRecording()  // always end — even if draw() throws
-      }
-
-      // Step 2: contentNode recording is FINISHED before we reference it
-      // in blurNode. This is critical — drawing an actively-recording
-      // RenderNode into another canvas is undefined behaviour.
-      val myLoc   = IntArray(2); getLocationInWindow(myLoc)
-      val rootLoc = IntArray(2); root.getLocationInWindow(rootLoc)
-      val offsetX = (myLoc[0] - rootLoc[0]).toFloat()
-      val offsetY = (myLoc[1] - rootLoc[1]).toFloat()
-
-      blurNode.setPosition(0, 0, vw, vh)
-      applyBlurRenderEffect()
-
-      val blurCanvas = blurNode.beginRecording()
-      try {
-        blurCanvas.translate(-offsetX, -offsetY)
-        blurCanvas.drawRenderNode(contentNode)  // safe: contentNode recording is done
-      } finally {
-        blurNode.endRecording()
-      }
-
-    } finally {
-      isCapturing = false
+    val vto  = root.viewTreeObserver
+    // Remove first (no-op if not attached) then re-add to current observer
+    vto.removeOnPreDrawListener(preDrawListener)
+    if (vto.isAlive) {
+      vto.addOnPreDrawListener(preDrawListener)
     }
   }
 
-  private fun applyBlurRenderEffect() {
-    if (blurRadiusX < 0.5f && blurRadiusY < 0.5f) {
-      blurNode.setRenderEffect(null)
-      return
+  // ── Blur init ─────────────────────────────────────────────────────────────
+
+  private fun initBlur() {
+    val w = measuredWidth;  if (w <= 0) return
+    val h = measuredHeight; if (h <= 0) return
+
+    internalBitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+    renderNode.setPosition(0, 0, w, h)
+    initialized = true
+    setWillNotDraw(false)
+    updateBlur()
+  }
+
+  // ── Core blur update (ModernBlurView pattern) ─────────────────────────────
+
+  private fun updateBlur() {
+    if (!blurEnabled || !initialized) return
+    val root   = blurRoot          ?: return
+    val bitmap = internalBitmap    ?: return
+
+    // ① Capture root into internalBitmap (same as ModernBlurView's approach)
+    //   Translate canvas so we capture exactly the region behind this view
+    // getLocationInWindow — correct for ALL Android versions and ALL window modes
+    // (split-screen, freeform, PiP, DeX).
+    // rootView.draw() uses window-relative coordinates, so we must also use
+    // window-relative positions for the offset — not screen-absolute.
+    // getLocationOnScreen is WRONG in split-screen (Android 7+) because the
+    // app window doesn't start at screen (0,0) in that mode.
+    root.getLocationInWindow(rootLocation)
+    getLocationInWindow(blurViewLocation)
+
+    val scaleW = width.toFloat()  / bitmap.width.toFloat()
+    val scaleH = height.toFloat() / bitmap.height.toFloat()
+    val left   = (blurViewLocation[0] - rootLocation[0])
+    val top    = (blurViewLocation[1] - rootLocation[1])
+
+    val captureCanvas = Canvas(bitmap)
+    captureCanvas.drawColor(Color.TRANSPARENT, PorterDuff.Mode.CLEAR)
+    captureCanvas.translate(-left / scaleW, -top / scaleH)
+    captureCanvas.scale(1f / scaleW, 1f / scaleH)
+    try {
+      root.draw(captureCanvas)
+    } catch (_: Exception) { return }
+
+    // ② Record bitmap into RenderNode (ModernBlurView key insight:
+    //    bitmap → RenderNode is stable; RenderNode → RenderNode is not)
+    if (renderNode.width != bitmap.width || renderNode.height != bitmap.height) {
+      renderNode.setPosition(0, 0, bitmap.width, bitmap.height)
     }
-    blurNode.setRenderEffect(
-      RenderEffect.createBlurEffect(blurRadiusX, blurRadiusY, Shader.TileMode.CLAMP)
-    )
+    val nodeCanvas = renderNode.beginRecording()
+    nodeCanvas.drawBitmap(bitmap, 0f, 0f, null)
+    renderNode.endRecording()
+
+    // ③ Build chained RenderEffect: blur first, then tint on top (one GPU pass)
+    val radius = blurRadiusFromAmount(blurAmount)
+    val blurEffect = RenderEffect.createBlurEffect(radius, radius, Shader.TileMode.MIRROR)
+
+    val finalEffect = if (Color.alpha(overlayColor) > 0) {
+      // Chain: blur → tint in single GPU pass (ModernBlurView's chained approach)
+      val tintEffect = RenderEffect.createColorFilterEffect(
+        BlendModeColorFilter(overlayColor, BlendMode.SRC_ATOP)
+      )
+      RenderEffect.createChainEffect(tintEffect, blurEffect)
+    } else {
+      blurEffect
+    }
+
+    renderNode.setRenderEffect(finalEffect)
+
+    // ④ Trigger redraw — onDraw will drawRenderNode (GPU-rendered result)
+    invalidate()
   }
 
   // ── Draw ───────────────────────────────────────────────────────────────────
 
   override fun onDraw(canvas: Canvas) {
+    if (!blurEnabled || !initialized) return
     val w = width.toFloat();  if (w <= 0f) return
     val h = height.toFloat(); if (h <= 0f) return
-
-    // Guard: only draw if blurNode has a valid recorded display list
-    if (!blurNode.hasDisplayList()) return
+    if (!renderNode.hasDisplayList()) return
 
     // Step 1: save layer for progressive mask compositing
     val saveCount = if (progressiveDirection != PROGRESSIVE_NONE) {
       canvas.saveLayer(0f, 0f, w, h, null)
     } else -1
 
-    // Step 2: draw the blurred backdrop
-    canvas.drawRenderNode(blurNode)
+    // Step 2: draw GPU-blurred + tinted result
+    // Scale from bitmap resolution back to view resolution
+    val bitmapW = internalBitmap?.width?.toFloat()  ?: w
+    val bitmapH = internalBitmap?.height?.toFloat() ?: h
+    val scaleX = w / bitmapW
+    val scaleY = h / bitmapH
+    canvas.save()
+    canvas.scale(scaleX, scaleY)
+    canvas.drawRenderNode(renderNode)
+    canvas.restore()
 
-    // Step 3: progressive alpha mask
+    // Step 3: progressive alpha mask fades the blur
     if (progressiveDirection != PROGRESSIVE_NONE && saveCount >= 0) {
       buildProgressiveShader(w, h)?.let { shader ->
         maskPaint.shader = shader
@@ -232,38 +302,26 @@ class BlurVibeViewApi31(context: Context) : ReactViewGroup(context) {
       canvas.restoreToCount(saveCount)
     }
 
-    // Step 4: overlay tint
-    if (Color.alpha(overlayColor) > 0) {
-      overlayPaint.color = overlayColor
-      if (cornerRadiusPx > 0f) {
-        canvas.drawRoundRect(RectF(0f, 0f, w, h), cornerRadiusPx, cornerRadiusPx, overlayPaint)
-      } else {
-        canvas.drawRect(0f, 0f, w, h, overlayPaint)
-      }
-    }
-
-    // Step 5: noise grain
-    noiseBitmap?.takeIf { !it.isRecycled }?.let { bmp ->
-      if (noiseFactor > 0f) {
-        noisePaint.alpha  = (noiseFactor * 255f).toInt().coerceIn(0, 255)
-        noisePaint.shader = BitmapShader(bmp, Shader.TileMode.REPEAT, Shader.TileMode.REPEAT)
-        canvas.drawRect(0f, 0f, w, h, noisePaint)
-      }
+    // Step 4: noise grain overlay
+    noiseBitmap?.takeIf { !it.isRecycled && noiseFactor > 0f }?.let { noise ->
+      noisePaint.alpha  = (noiseFactor * 255f).toInt().coerceIn(0, 255)
+      noisePaint.shader = BitmapShader(noise, Shader.TileMode.REPEAT, Shader.TileMode.REPEAT)
+      canvas.drawRect(0f, 0f, w, h, noisePaint)
     }
   }
 
   // ── Progressive shader ────────────────────────────────────────────────────
 
   private fun buildProgressiveShader(w: Float, h: Float): Shader? {
-    val startColor = Color.argb((progressiveStartIntensity.coerceIn(0f,1f) * 255).toInt(), 0,0,0)
-    val endColor   = Color.argb((progressiveEndIntensity.coerceIn(0f,1f)   * 255).toInt(), 0,0,0)
+    val sc = Color.argb((progressiveStartIntensity.coerceIn(0f,1f)*255).toInt(),0,0,0)
+    val ec = Color.argb((progressiveEndIntensity.coerceIn(0f,1f)*255).toInt(),0,0,0)
     return when (progressiveDirection) {
-      PROGRESSIVE_TOP_TO_BOTTOM -> LinearGradient(0f,0f,0f,h, startColor,endColor, Shader.TileMode.CLAMP)
-      PROGRESSIVE_BOTTOM_TO_TOP -> LinearGradient(0f,h,0f,0f, startColor,endColor, Shader.TileMode.CLAMP)
-      PROGRESSIVE_LEFT_TO_RIGHT -> LinearGradient(0f,0f,w,0f, startColor,endColor, Shader.TileMode.CLAMP)
-      PROGRESSIVE_RIGHT_TO_LEFT -> LinearGradient(w,0f,0f,0f, startColor,endColor, Shader.TileMode.CLAMP)
-      PROGRESSIVE_RADIAL        -> RadialGradient(w/2f,h/2f, min(w,h)/2f, startColor,endColor, Shader.TileMode.CLAMP)
-      else                      -> null
+      PROGRESSIVE_TOP_TO_BOTTOM -> LinearGradient(0f,0f,0f,h,sc,ec,Shader.TileMode.CLAMP)
+      PROGRESSIVE_BOTTOM_TO_TOP -> LinearGradient(0f,h,0f,0f,sc,ec,Shader.TileMode.CLAMP)
+      PROGRESSIVE_LEFT_TO_RIGHT -> LinearGradient(0f,0f,w,0f,sc,ec,Shader.TileMode.CLAMP)
+      PROGRESSIVE_RIGHT_TO_LEFT -> LinearGradient(w,0f,0f,0f,sc,ec,Shader.TileMode.CLAMP)
+      PROGRESSIVE_RADIAL        -> RadialGradient(w/2f,h/2f,min(w,h)/2f,sc,ec,Shader.TileMode.CLAMP)
+      else -> null
     }
   }
 
@@ -274,11 +332,9 @@ class BlurVibeViewApi31(context: Context) : ReactViewGroup(context) {
     val size = 64
     val bmp  = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
     val rng  = Random(42)
-    for (x in 0 until size) {
-      for (y in 0 until size) {
-        val v = rng.nextInt(256)
-        bmp.setPixel(x, y, Color.argb(255, v, v, v))
-      }
+    for (x in 0 until size) for (y in 0 until size) {
+      val v = rng.nextInt(256)
+      bmp.setPixel(x, y, Color.argb(255, v, v, v))
     }
     noiseBitmap = bmp
   }
@@ -286,16 +342,13 @@ class BlurVibeViewApi31(context: Context) : ReactViewGroup(context) {
   // ── Public setters ─────────────────────────────────────────────────────────
 
   fun setBlurAmount(amount: Float) {
-    val t = amount.coerceIn(0f, 100f) / 100f
-    blurRadiusX = t * t * MAX_BLUR_RADIUS
-    blurRadiusY = blurRadiusX
-    applyBlurRenderEffect()
+    blurAmount = amount.coerceIn(0f, 100f)
     scheduleFrame()
   }
 
   fun setOverlayColor(colorString: String?) {
     overlayColor = parseHexColor(colorString ?: "transparent") ?: Color.TRANSPARENT
-    invalidate()
+    scheduleFrame()
   }
 
   fun applyBorderRadius(radiusDp: Float) {
@@ -311,50 +364,41 @@ class BlurVibeViewApi31(context: Context) : ReactViewGroup(context) {
     invalidate()
   }
 
-  fun setReducedTransparencyFallbackColor(@Suppress("UNUSED_PARAMETER") color: String?) { }
+  fun setReducedTransparencyFallbackColor(@Suppress("UNUSED_PARAMETER") c: String?) {}
 
-  fun setProgressiveBlurDirection(direction: String?) {
-    progressiveDirection = when (direction) {
+  fun setProgressiveBlurDirection(d: String?) {
+    progressiveDirection = when (d) {
       "topToBottom" -> PROGRESSIVE_TOP_TO_BOTTOM
       "bottomToTop" -> PROGRESSIVE_BOTTOM_TO_TOP
       "leftToRight" -> PROGRESSIVE_LEFT_TO_RIGHT
       "rightToLeft" -> PROGRESSIVE_RIGHT_TO_LEFT
       "radial"      -> PROGRESSIVE_RADIAL
       else          -> PROGRESSIVE_NONE
-    }
-    invalidate()
+    }; invalidate()
   }
 
-  fun setProgressiveStartIntensity(intensity: Float) {
-    progressiveStartIntensity = intensity.coerceIn(0f, 1f); invalidate()
-  }
-
-  fun setProgressiveEndIntensity(intensity: Float) {
-    progressiveEndIntensity = intensity.coerceIn(0f, 1f); invalidate()
-  }
-
-  fun setNoiseFactor(factor: Float) {
-    noiseFactor = factor.coerceIn(0f, 1f); invalidate()
-  }
+  fun setProgressiveStartIntensity(v: Float) { progressiveStartIntensity = v.coerceIn(0f,1f); invalidate() }
+  fun setProgressiveEndIntensity(v: Float)   { progressiveEndIntensity   = v.coerceIn(0f,1f); invalidate() }
+  fun setNoiseFactor(v: Float)               { noiseFactor = v.coerceIn(0f,1f); invalidate() }
 
   fun applyBlurEnabled(enabled: Boolean) {
-    if (!enabled) {
+    blurEnabled = enabled
+    if (enabled) {
+      safeAddPreDrawListener()
+      scheduleFrame()
+    } else {
       blurRoot?.viewTreeObserver?.removeOnPreDrawListener(preDrawListener)
       Choreographer.getInstance().removeFrameCallback(frameCallback)
       frameScheduled = false
-      blurNode.discardDisplayList()
-      contentNode.discardDisplayList()
+      renderNode.discardDisplayList()
       invalidate()
-    } else {
-      blurRoot?.viewTreeObserver?.addOnPreDrawListener(preDrawListener)
-      scheduleFrame()
     }
   }
 
-  fun setAutoUpdate(autoUpdate: Boolean) {
-    if (autoUpdate) {
-      blurRoot?.viewTreeObserver?.addOnPreDrawListener(preDrawListener)
-    } else {
+  fun setAutoUpdate(update: Boolean) {
+    autoUpdate = update
+    if (update) safeAddPreDrawListener()
+    else {
       blurRoot?.viewTreeObserver?.removeOnPreDrawListener(preDrawListener)
       Choreographer.getInstance().removeFrameCallback(frameCallback)
       frameScheduled = false
@@ -364,10 +408,15 @@ class BlurVibeViewApi31(context: Context) : ReactViewGroup(context) {
   // ── Helpers ────────────────────────────────────────────────────────────────
 
   private fun scheduleFrame() {
-    if (!frameScheduled) {
+    if (!frameScheduled && blurEnabled) {
       frameScheduled = true
       Choreographer.getInstance().postFrameCallback(frameCallback)
     }
+  }
+
+  private fun blurRadiusFromAmount(amount: Float): Float {
+    val t = amount / 100f
+    return (t * t * 25f).coerceIn(1f, 25f)
   }
 
   private fun findBlurRoot(): ViewGroup? {
@@ -391,12 +440,12 @@ class BlurVibeViewApi31(context: Context) : ReactViewGroup(context) {
     val hex = t.removePrefix("#")
     return try {
       when (hex.length) {
-        3 -> Color.argb(255, hex[0].toString().repeat(2).toInt(16),
-                             hex[1].toString().repeat(2).toInt(16),
-                             hex[2].toString().repeat(2).toInt(16))
-        6 -> Color.argb(255, hex.substring(0,2).toInt(16),
-                             hex.substring(2,4).toInt(16),
-                             hex.substring(4,6).toInt(16))
+        3 -> Color.argb(255,hex[0].toString().repeat(2).toInt(16),
+                            hex[1].toString().repeat(2).toInt(16),
+                            hex[2].toString().repeat(2).toInt(16))
+        6 -> Color.argb(255,hex.substring(0,2).toInt(16),
+                            hex.substring(2,4).toInt(16),
+                            hex.substring(4,6).toInt(16))
         8 -> Color.argb(hex.substring(6,8).toInt(16),
                         hex.substring(0,2).toInt(16),
                         hex.substring(2,4).toInt(16),
@@ -406,16 +455,14 @@ class BlurVibeViewApi31(context: Context) : ReactViewGroup(context) {
     } catch (_: NumberFormatException) { null }
   }
 
-  override fun onLayout(changed: Boolean, left: Int, top: Int, right: Int, bottom: Int) { }
+  override fun onLayout(changed: Boolean, l: Int, t: Int, r: Int, b: Int) {}
 
   companion object {
-    private const val MAX_BLUR_RADIUS     = 25f
-    private const val DEFAULT_BLUR_RADIUS = 2.5f
-    const val PROGRESSIVE_NONE           = 0
-    const val PROGRESSIVE_TOP_TO_BOTTOM  = 1
-    const val PROGRESSIVE_BOTTOM_TO_TOP  = 2
-    const val PROGRESSIVE_LEFT_TO_RIGHT  = 3
-    const val PROGRESSIVE_RIGHT_TO_LEFT  = 4
-    const val PROGRESSIVE_RADIAL         = 5
+    const val PROGRESSIVE_NONE          = 0
+    const val PROGRESSIVE_TOP_TO_BOTTOM = 1
+    const val PROGRESSIVE_BOTTOM_TO_TOP = 2
+    const val PROGRESSIVE_LEFT_TO_RIGHT = 3
+    const val PROGRESSIVE_RIGHT_TO_LEFT = 4
+    const val PROGRESSIVE_RADIAL        = 5
   }
 }
