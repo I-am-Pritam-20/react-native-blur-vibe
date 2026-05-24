@@ -101,7 +101,7 @@ class BlurVibeView(context: Context) : ReactViewGroup(context) {
     // Exposed as a downsample override for power users — not used internally
   }
 
-  fun setBorderRadius(radiusDp: Float) {
+  fun applyBorderRadius(radiusDp: Float) {
     cornerRadiusPx = TypedValue.applyDimension(
       TypedValue.COMPLEX_UNIT_DIP, radiusDp, context.resources.displayMetrics
     )
