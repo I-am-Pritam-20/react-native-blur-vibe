@@ -336,13 +336,14 @@ class BlurVibeViewApi31(context: Context) : ReactViewGroup(context) {
     scheduleFrame()
   }
 
-  // borderRadius from JS style prop — handled natively by ReactViewGroup.
-  // applyBorderRadius is called by our @ReactProp "borderRadius" binding.
-  // We additionally set clipToOutline so the blur content is clipped correctly.
-  fun applyBorderRadius(radiusDp: Float) {
-    cornerRadiusPx = TypedValue.applyDimension(
-      TypedValue.COMPLEX_UNIT_DIP, radiusDp, context.resources.displayMetrics
-    )
+  // override setBorderRadius intercepts BOTH:
+  //   1. style={{ borderRadius: 16 }} — RN StyleSheet path via BaseViewManager
+  //   2. <BlurView borderRadius={16} /> — direct prop via @ReactProp
+  // super.setBorderRadius() lets ReactViewGroup draw the rounded border.
+  // We additionally set clipToOutline so the blur content is clipped to match.
+  override fun setBorderRadius(borderRadius: Float) {
+    super.setBorderRadius(borderRadius)
+    cornerRadiusPx = borderRadius  // already in px from RN system
     if (cornerRadiusPx > 0f) {
       outlineProvider = object : ViewOutlineProvider() {
         override fun getOutline(view: View, outline: Outline) {
@@ -355,6 +356,13 @@ class BlurVibeViewApi31(context: Context) : ReactViewGroup(context) {
       clipToOutline   = false
     }
     invalidate()
+  }
+
+  // applyBorderRadius kept for @ReactProp "borderRadius" direct prop path
+  fun applyBorderRadius(radiusDp: Float) {
+    setBorderRadius(TypedValue.applyDimension(
+      TypedValue.COMPLEX_UNIT_DIP, radiusDp, context.resources.displayMetrics
+    ))
   }
 
   fun setReducedTransparencyFallbackColor(@Suppress("UNUSED_PARAMETER") c: String?) {}

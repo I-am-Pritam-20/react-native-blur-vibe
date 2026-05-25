@@ -2,25 +2,24 @@
 
 <img width="1500" height="500" alt="github-banner" src="https://github.com/user-attachments/assets/78b2e5ec-5b57-48c0-b984-69cb57cbcf26" />
 <br></br>
-A modern, actively maintained blur view for React Native. Works on <b>iOS</b> and <b>Android</b> with full New Architecture (Fabric) support.
- 
-> The key difference from other blur libraries: `overlayColor` works on **both iOS and Android** — letting you control blur visibility the same way CSS `backdrop-filter` + `background-color` works on the web.
- <br></br>
 
+A modern, actively maintained blur view for React Native. Works on **iOS** and **Android** with full New Architecture (Fabric) support.
+
+> The key difference from other blur libraries: `overlayColor` works on **both iOS and Android** — letting you control blur visibility the same way CSS `backdrop-filter` + `background-color` works on the web.
+
+<br></br>
 
 [![npm version](https://img.shields.io/npm/v/react-native-blur-vibe)](https://www.npmjs.com/package/react-native-blur-vibe)
 [![Build iOS](https://github.com/I-am-Pritam-20/react-native-blur-vibe/actions/workflows/build-ios.yml/badge.svg)](https://github.com/I-am-Pritam-20/react-native-blur-vibe/actions/workflows/build-ios.yml)
 [![Build Android](https://github.com/I-am-Pritam-20/react-native-blur-vibe/actions/workflows/build-android.yml/badge.svg)](https://github.com/I-am-Pritam-20/react-native-blur-vibe/actions/workflows/build-android.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
- <div align="left">
+
+<div align="left">
   <p>
     <img src="https://img.shields.io/badge/iOS-13%2B-blue?style=flat-square" alt="iOS 13+" />
     <img src="https://img.shields.io/badge/Android-API%2021%2B-green?style=flat-square" alt="Android API 21+" />
   </p>
 </div>
-
----
-
 
 ---
 
@@ -32,8 +31,13 @@ A modern, actively maintained blur view for React Native. Works on <b>iOS</b> an
 | Overlay tint | ✅ | ✅ | ✅ |
 | Progressive blur | ✅ | ✅ | ❌ |
 | Noise texture | ✅ | ✅ | ❌ |
+| Full RN style props | ✅ | ✅ | ✅ |
 | `blurType` | ✅ | ❌ | ❌ |
+| `enabled` / `autoUpdate` | ✅ | ✅ | ✅ |
 | `blurRadius` downsample | ❌ | ❌ | ✅ |
+| Split-screen / PiP / Freeform | ✅ | ✅ | ✅ |
+| Old Architecture (Paper) | ✅ | ✅ | ✅ |
+| New Architecture (Fabric) | ✅ | ✅ | ✅ |
 
 ---
 
@@ -55,9 +59,7 @@ Minimum deployment target: **iOS 13.0**
 
 ### Android
 
-Minimum SDK: **API 21** (Android 5.0)
-
-No extra configuration required. The package automatically picks the best blur engine for the running API level.
+Minimum SDK: **API 21** (Android 5.0). No extra configuration needed.
 
 ---
 
@@ -94,8 +96,6 @@ export default function Card() {
 
 Blur intensity from `0` (no blur) to `100` (maximum blur).
 
-Approximate CSS `backdrop-filter` equivalents:
-
 | `blurAmount` | CSS equivalent | Visual feel |
 |---|---|---|
 | `5` | `backdrop-blur-sm` (4px) | Subtle hint |
@@ -103,7 +103,7 @@ Approximate CSS `backdrop-filter` equivalents:
 | `25` | `backdrop-blur-md` (12px) | Standard card |
 | `50` | `backdrop-blur-xl` (24px) | Heavy glass |
 | `75` | `backdrop-blur-2xl` | Dense blur |
-| `100` | `backdrop-blur-3xl` | Maximum |
+| `100` | `backdrop-blur-3xl` | Maximum — nearly opaque frosted panel |
 
 ```tsx
 <BlurView blurAmount={30} style={StyleSheet.absoluteFill} />
@@ -126,8 +126,6 @@ backdrop-filter: blur(Xpx);
 background-color: <overlayColor>;
 ```
 
-The alpha channel controls how much blur shows through:
-
 | Value | Effect |
 |---|---|
 | `"#00000000"` | Transparent — pure blur, no tint |
@@ -137,10 +135,6 @@ The alpha channel controls how much blur shows through:
 | `"#000000FF"` | Fully opaque — blur hidden |
 
 Supported formats: `"transparent"`, `"#RGB"`, `"#RRGGBB"`, `"#RRGGBBAA"`
-
-```tsx
-<BlurView blurAmount={20} overlayColor="#FFFFFF25" style={StyleSheet.absoluteFill} />
-```
 
 ---
 
@@ -152,8 +146,7 @@ Supported formats: `"transparent"`, `"#RGB"`, `"#RRGGBB"`, `"#RRGGBBAA"`
 | Default | `"light"` |
 | Platform | **iOS only** — ignored on Android |
 
-
-**Adaptive styles** (change with light/dark mode — recommended):
+Maps to `UIBlurEffect.Style`. Use `overlayColor` to tint on Android.
 
 | Value | Description |
 |---|---|
@@ -168,9 +161,7 @@ Supported formats: `"transparent"`, `"#RGB"`, `"#RRGGBB"`, `"#RRGGBBAA"`
 | `"systemThickMaterial"` | Thick material |
 | `"systemChromeMaterial"` | For toolbars / nav bars |
 
-Also available: `Light` and `Dark` suffixed variants (e.g. `"systemMaterialDark"`) for explicit mode control. See `BlurType` in types for the full list.
-
- ❗On Android, use `overlayColor` to control the tint instead.
+Also available: `Light` and `Dark` suffixed variants (e.g. `"systemMaterialDark"`). See `BlurType` in types.
 
 ```tsx
 <BlurView blurType="systemMaterial" blurAmount={100} style={StyleSheet.absoluteFill} />
@@ -186,19 +177,7 @@ Also available: `Light` and `Dark` suffixed variants (e.g. `"systemMaterialDark"
 | Default | `"#F2F2F2"` |
 | Platform | iOS + Android |
 
-Solid color shown when blur is unavailable:
-- **iOS**: User enabled *Settings → Accessibility → Display & Text Size → Reduce Transparency*
-- **Android**: Device API level < 21
-
-Should provide sufficient contrast without the blur. Use a semi-opaque version of your background color.
-
-```tsx
-<BlurView
-  blurAmount={20}
-  reducedTransparencyFallbackColor="#1C1C1ECC"
-  style={StyleSheet.absoluteFill}
-/>
-```
+Solid color shown when blur is unavailable (iOS Reduce Transparency enabled, or Android API < 21).
 
 ---
 
@@ -208,19 +187,40 @@ Should provide sufficient contrast without the blur. Use a semi-opaque version o
 |---|---|
 | Type | `number` (integer 1–8) |
 | Default | `4` |
-| Platform | **Android API < 31 only** — ignored on API 31+ and iOS |
+| Platform | **Android API < 31 only** |
 
+RenderScript capture downsample factor. Higher = faster but softer. Ignored on API 31+ and iOS.
 
-| Value | Pixels captured | Quality | Speed |
-|---|---|---|---|
-| `1` | Full res | Sharpest | Slowest |
-| `4` | 1/16 (default) | Good | Fast |
-| `8` | 1/64 | Softer | Fastest |
+---
 
-On **Android API 31+** the blur runs at full resolution on the GPU — this prop has no effect.
+### `enabled`
+
+| | |
+|---|---|
+| Type | `boolean` |
+| Default | `true` |
+| Platform | iOS + Android |
+
+Enable or disable the blur effect. When `false`, the view renders transparently. Useful for toggling blur based on scroll position or performance mode.
 
 ```tsx
-<BlurView blurAmount={20} blurRadius={4} style={StyleSheet.absoluteFill} />
+<BlurView blurAmount={30} enabled={isScrolling ? false : true} style={StyleSheet.absoluteFill} />
+```
+
+---
+
+### `autoUpdate`
+
+| | |
+|---|---|
+| Type | `boolean` |
+| Default | `true` |
+| Platform | iOS + Android |
+
+When `false`, blur is captured once at mount and never updated. Use for completely static backgrounds (e.g. blurred album art) to eliminate all per-frame cost on Android API < 31.
+
+```tsx
+<BlurView blurAmount={40} autoUpdate={false} style={StyleSheet.absoluteFill} />
 ```
 
 ---
@@ -231,7 +231,7 @@ On **Android API 31+** the blur runs at full resolution on the GPU — this prop
 |---|---|
 | Type | `ProgressiveBlurDirection` |
 | Default | `"none"` |
-| Platform | **iOS + Android API 31+** — Android API < 31 shows uniform blur |
+| Platform | **iOS + Android API 31+** |
 
 Direction the blur intensity fades across the view.
 
@@ -244,9 +244,7 @@ Direction the blur intensity fades across the view.
 | `"rightToLeft"` | Right edge | Left edge |
 | `"radial"` | Center | Outer edges |
 
-
 ```tsx
-// Sticky header — full blur at top, fades to nothing at bottom
 <BlurView
   blurAmount={40}
   progressiveBlurDirection="topToBottom"
@@ -266,17 +264,7 @@ Direction the blur intensity fades across the view.
 | Default | `1.0` |
 | Platform | **iOS + Android API 31+** |
 
-Blur intensity at the **start** of the gradient direction.
-
-- `1.0` — full blur at `blurAmount` intensity
-- `0.0` — completely transparent / no blur
-
-"Start" depends on `progressiveBlurDirection`:
-- `"topToBottom"` → top edge
-- `"bottomToTop"` → bottom edge
-- `"leftToRight"` → left edge
-- `"rightToLeft"` → right edge
-- `"radial"` → center
+Blur intensity at the start of the gradient direction. `1.0` = full blur, `0.0` = no blur.
 
 ---
 
@@ -288,9 +276,7 @@ Blur intensity at the **start** of the gradient direction.
 | Default | `0.0` |
 | Platform | **iOS + Android API 31+** |
 
-Blur intensity at the **end** of the gradient direction.
-
-"End" is the opposite edge/point from `progressiveStartIntensity`.
+Blur intensity at the end of the gradient direction.
 
 ---
 
@@ -300,26 +286,55 @@ Blur intensity at the **end** of the gradient direction.
 |---|---|
 | Type | `number` (0.0–1.0) |
 | Default | `0.08` |
-| Platform | **iOS + Android API 31+** — Android API < 31 silently ignores |
+| Platform | **iOS + Android API 31+** |
 
-Noise grain overlay strength. Adds a subtle static grain texture on top of the blur, mimicking the micro-texture of real ground glass and making the blur feel more physical and premium.
+Noise grain overlay for tactile frosted-glass texture.
 
 | Value | Effect |
 |---|---|
 | `0` | No noise — clean digital blur |
-| `0.08` | Subtle, barely perceptible (default) |
-| `0.15` | Noticeable grain (Haze library default) |
+| `0.08` | Subtle grain (default) |
+| `0.15` | Noticeable grain |
 | `0.30` | Heavy grain |
-
-```tsx
-<BlurView blurAmount={50} noiseFactor={0.12} style={StyleSheet.absoluteFill} />
-```
 
 ---
 
-## Usage examples
+## Style props
 
-### Basic frosted glass card
+`BlurView` accepts **all standard React Native View style props** via `StyleSheet` — including `borderRadius`, `borderColor`, `borderWidth`, `opacity`, `backgroundColor`, `elevation`, `shadowColor`, and all others.
+
+### `borderRadius` via StyleSheet
+
+Use `borderRadius` directly inside `style` — it works exactly like any other RN view:
+
+```tsx
+// ✅ Via StyleSheet (recommended)
+<BlurView
+  blurAmount={30}
+  overlayColor="#FFFFFF20"
+  style={{
+    borderRadius: 20,
+    overflow: 'hidden',   // required on iOS for clipping
+    ...StyleSheet.absoluteFillObject,
+  }}
+/>
+
+// ✅ Via StyleSheet.create
+const styles = StyleSheet.create({
+  blur: {
+    borderRadius: 16,
+    overflow: 'hidden',
+    position: 'absolute',
+    top: 0, left: 0, right: 0, bottom: 0,
+  },
+});
+
+<BlurView blurAmount={25} overlayColor="#00000040" style={styles.blur} />
+```
+
+> **Note:** Add `overflow: 'hidden'` when using `borderRadius` on iOS to ensure child content is clipped correctly. On Android this is handled automatically via `clipToOutline`.
+
+### Rounded frosted card
 
 ```tsx
 import { BlurView } from 'react-native-blur-vibe';
@@ -330,22 +345,85 @@ function FrostedCard() {
     <ImageBackground source={require('./bg.jpg')} style={styles.bg}>
       <View style={styles.card}>
         <BlurView
-          blurAmount={30}
-          overlayColor="#FFFFFF20"
+          blurAmount={35}
+          overlayColor="#FFFFFF18"
           noiseFactor={0.1}
-          style={StyleSheet.absoluteFill}
+          style={[StyleSheet.absoluteFill, styles.blur]}
         />
-        <Text style={styles.title}>Hello</Text>
+        <Text style={styles.title}>Now Playing</Text>
       </View>
     </ImageBackground>
   );
 }
+
+const styles = StyleSheet.create({
+  bg: { flex: 1 },
+  card: {
+    margin: 20,
+    borderRadius: 24,
+    overflow: 'hidden',   // clips blur to card shape on iOS
+    padding: 20,
+  },
+  blur: {
+    borderRadius: 24,     // matches card borderRadius
+  },
+  title: { color: '#fff', fontSize: 18, fontWeight: '600' },
+});
+```
+
+### Individual corner radii
+
+```tsx
+<BlurView
+  blurAmount={25}
+  style={{
+    borderTopLeftRadius: 0,
+    borderTopRightRadius: 0,
+    borderBottomLeftRadius: 20,
+    borderBottomRightRadius: 20,
+    overflow: 'hidden',
+  }}
+/>
+```
+
+### Border with blur
+
+```tsx
+<BlurView
+  blurAmount={30}
+  overlayColor="#FFFFFF10"
+  style={{
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.3)',
+    overflow: 'hidden',
+  }}
+/>
+```
+
+---
+
+## Usage examples
+
+### Basic frosted glass card
+
+```tsx
+<ImageBackground source={require('./bg.jpg')} style={styles.bg}>
+  <View style={styles.card}>
+    <BlurView
+      blurAmount={30}
+      overlayColor="#FFFFFF20"
+      noiseFactor={0.1}
+      style={[StyleSheet.absoluteFill, { borderRadius: 20 }]}
+    />
+    <Text style={styles.title}>Hello</Text>
+  </View>
+</ImageBackground>
 ```
 
 ### Sticky header with progressive blur
 
 ```tsx
-// Full blur at top, fades to nothing — used by iOS App Library, Spotlight
 <BlurView
   blurAmount={40}
   overlayColor="#00000020"
@@ -359,7 +437,6 @@ function FrostedCard() {
 ### Bottom sheet scrim
 
 ```tsx
-// No blur at top, full blur at bottom — bottom sheet background
 <BlurView
   blurAmount={50}
   overlayColor="#00000040"
@@ -370,32 +447,43 @@ function FrostedCard() {
 />
 ```
 
-### Music player card (dark frosted glass)
+### Music player card — dark frosted glass
 
 ```tsx
 <BlurView
   blurAmount={60}
-  blurType="systemMaterial"        // iOS: system material
-  overlayColor="#00000050"         // Android: dark tint
+  blurType="systemMaterial"
+  overlayColor="#00000050"
   noiseFactor={0.12}
+  style={[StyleSheet.absoluteFill, { borderRadius: 16 }]}
+/>
+```
+
+### Toggle blur on scroll
+
+```tsx
+const [isScrolling, setIsScrolling] = React.useState(false);
+
+<BlurView
+  blurAmount={30}
+  enabled={!isScrolling}
   style={StyleSheet.absoluteFill}
 />
 ```
 
-### Pure blur, no tint
+### Static background blur (best performance)
 
 ```tsx
-// Maximum blur, fully transparent overlay
+// Capture once, never update — great for album art, splash screens
 <BlurView
   blurAmount={50}
-  overlayColor="#00000000"
+  autoUpdate={false}
+  overlayColor="#00000030"
   style={StyleSheet.absoluteFill}
 />
 ```
 
 ### Inside a Modal
-
-Works out of the box — the blur root is automatically scoped to the nearest `Screen` or `ReactRootView`.
 
 ```tsx
 <Modal visible={visible} transparent>
@@ -408,7 +496,7 @@ Works out of the box — the blur root is automatically scoped to the nearest `S
 </Modal>
 ```
 
-### Inside FlatList / FlashList cards
+### Inside FlatList / FlashList
 
 ```tsx
 <FlatList
@@ -418,13 +506,15 @@ Works out of the box — the blur root is automatically scoped to the nearest `S
       <BlurView
         blurAmount={20}
         overlayColor="#FFFFFF15"
-        style={StyleSheet.absoluteFill}
+        style={[StyleSheet.absoluteFill, { borderRadius: 12 }]}
       />
       <Text>{item.title}</Text>
     </ImageBackground>
   )}
 />
 ```
+
+---
 
 ## TypeScript
 
@@ -438,4 +528,4 @@ import type { BlurViewProps, BlurType, ProgressiveBlurDirection } from 'react-na
 
 ## License
 
-MIT ©[Pritam Nanda](https://github.com/I-am-Pritam-20)
+MIT © [Pritam Nanda](https://github.com/I-am-Pritam-20)

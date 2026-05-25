@@ -101,10 +101,9 @@ class BlurVibeView(context: Context) : ReactViewGroup(context) {
     // Exposed as a downsample override for power users — not used internally
   }
 
-  fun applyBorderRadius(radiusDp: Float) {
-    cornerRadiusPx = TypedValue.applyDimension(
-      TypedValue.COMPLEX_UNIT_DIP, radiusDp, context.resources.displayMetrics
-    )
+  override fun setBorderRadius(borderRadius: Float) {
+    super.setBorderRadius(borderRadius)
+    cornerRadiusPx = borderRadius
     if (cornerRadiusPx > 0f) {
       outlineProvider = object : ViewOutlineProvider() {
         override fun getOutline(view: View, outline: Outline) {
@@ -117,6 +116,12 @@ class BlurVibeView(context: Context) : ReactViewGroup(context) {
       clipToOutline   = false
     }
     invalidate()
+  }
+
+  fun applyBorderRadius(radiusDp: Float) {
+    setBorderRadius(TypedValue.applyDimension(
+      TypedValue.COMPLEX_UNIT_DIP, radiusDp, context.resources.displayMetrics
+    ))
   }
 
   fun setReducedTransparencyFallbackColor(@Suppress("UNUSED_PARAMETER") color: String?) {}
