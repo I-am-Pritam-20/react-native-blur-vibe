@@ -35,7 +35,7 @@ import kotlin.random.Random
 
 /**
  * BlurVibeViewApi31 — Backdrop blur for Android API 31+
-**/
+ **/
 @RequiresApi(Build.VERSION_CODES.S)
 class BlurVibeViewApi31(context: Context) : ReactViewGroup(context) {
 
@@ -126,6 +126,13 @@ class BlurVibeViewApi31(context: Context) : ReactViewGroup(context) {
 
   init {
     setWillNotDraw(false)
+    // DO NOT call setBackgroundColor — it replaces ReactViewGroup's
+    // ReactViewBackgroundDrawable, killing all RN style prop handling.
+    //
+    // outlineProvider = BACKGROUND: ReactViewBackgroundDrawable implements
+    // getOutline() for all RN borderRadius variants. clipToOutline=false
+    // by default — only enabled when a non-zero radius is actually set,
+    // to avoid GPU clip stack issues with overflow:hidden + Reanimated.
     outlineProvider = ViewOutlineProvider.BACKGROUND
   }
 
@@ -493,6 +500,14 @@ class BlurVibeViewApi31(context: Context) : ReactViewGroup(context) {
         else -> null
       }
     } catch (_: NumberFormatException) { null }
+  }
+
+  private fun blurRadiusFromAmount(amount: Float): Float {
+    // Linear 0→100 maps to 1→25 (RenderScript kernel max is 25).
+    // With BLUR_ROUNDS=4 passes the effective spread is radius × √4 = radius × 2,
+    // so blurAmount=100 gives effective spread of ~50px — properly frosted glass.
+    val t = amount.coerceIn(0f, 100f) / 100f
+    return (1f + t * 24f)
   }
 
   override fun onLayout(changed: Boolean, l: Int, t: Int, r: Int, b: Int) {}
