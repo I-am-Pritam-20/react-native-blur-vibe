@@ -11,19 +11,6 @@ import android.view.ViewOutlineProvider
 import androidx.core.graphics.toColorInt
 import com.facebook.react.views.view.ReactViewGroup
 
-/**
- * BlurVibeView — Android API 21–30 backdrop blur.
- *
- * Delegates all blur work to LegacyBlurController.
- * Extends ReactViewGroup — handles all RN style props (borderRadius,
- * opacity, transforms etc) natively via ReactViewGroup's own draw pipeline.
- *
- * THE STATIC BLUR FIX:
- * draw() is overridden to be a no-op when LegacyBlurController.isCapturing
- * is true. This prevents root.draw() from painting our stale blur output
- * into the capture bitmap. Without this, each frame captures the previous
- * frame's blur output and the blur appears frozen/static.
- */
 class BlurVibeView(context: Context) : ReactViewGroup(context) {
 
   private var blurController: LegacyBlurController? = null
@@ -33,7 +20,8 @@ class BlurVibeView(context: Context) : ReactViewGroup(context) {
 
   init {
     setWillNotDraw(false)
-    // DO NOT call setBackgroundColor — see BlurVibeViewApi31 for explanation.
+    outlineProvider = ViewOutlineProvider.BACKGROUND
+    clipToOutline   = true
   }
 
   // ── Lifecycle ──────────────────────────────────────────────────────────────
@@ -64,11 +52,6 @@ class BlurVibeView(context: Context) : ReactViewGroup(context) {
   }
 
   // ── draw() — suppress self during root capture ────────────────────────────
-  //
-  // When LegacyBlurController is actively capturing (root.draw() in progress),
-  // skip drawing ourselves. This makes us invisible to the capture canvas so
-  // the capture bitmap contains ONLY the content behind us, not our own stale
-  // blur output. Without this, the blur appears static/frozen.
 
   override fun draw(canvas: Canvas) {
     if (blurController?.isCapturing == true) return
@@ -101,27 +84,11 @@ class BlurVibeView(context: Context) : ReactViewGroup(context) {
     // Exposed as a downsample override for power users — not used internally
   }
 
-  override fun setBorderRadius(borderRadius: Float) {
-    super.setBorderRadius(borderRadius)
-    cornerRadiusPx = borderRadius
-    if (cornerRadiusPx > 0f) {
-      outlineProvider = object : ViewOutlineProvider() {
-        override fun getOutline(view: View, outline: Outline) {
-          outline.setRoundRect(0, 0, view.width, view.height, cornerRadiusPx)
-        }
-      }
-      clipToOutline = true
-    } else {
-      outlineProvider = ViewOutlineProvider.BACKGROUND
-      clipToOutline   = false
-    }
-    invalidate()
-  }
-
   fun applyBorderRadius(radiusDp: Float) {
-    setBorderRadius(TypedValue.applyDimension(
+    cornerRadiusPx = TypedValue.applyDimension(
       TypedValue.COMPLEX_UNIT_DIP, radiusDp, context.resources.displayMetrics
-    ))
+    )
+    invalidate()
   }
 
   fun setReducedTransparencyFallbackColor(@Suppress("UNUSED_PARAMETER") color: String?) {}
