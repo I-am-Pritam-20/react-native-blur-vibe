@@ -1,9 +1,9 @@
 # React Native Blur-Vibe
 
-<img width="1500" height="500" alt="github-banner" src="https://github.com/user-attachments/assets/78b2e5ec-5b57-48c0-b984-69cb57cbcf26" />
+<a href="https://www.npmjs.com/package/react-native-blur-vibe"><img width="100%" height="35%" alt="github-banner" src="https://github.com/user-attachments/assets/78b2e5ec-5b57-48c0-b984-69cb57cbcf26" /></a>
 <br></br>
 
-A modern, actively maintained blur view for React Native. Works on **iOS** and **Android** with full New Architecture (Fabric) support.
+A modern, actively maintained blur view for React Native. Works on **iOS** and **Android** with both Old (Paper) and New (Fabric) Architecture support.
 
 > The key difference from other blur libraries: `overlayColor` works on **both iOS and Android** — letting you control blur visibility the same way CSS `backdrop-filter` + `background-color` works on the web.
 
