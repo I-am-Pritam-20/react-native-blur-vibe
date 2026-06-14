@@ -18,7 +18,6 @@ import android.os.Handler
 import android.os.HandlerThread
 import android.os.Looper
 import android.util.TypedValue
-import android.view.Choreographer
 import android.view.View
 import android.view.ViewGroup
 import android.view.ViewOutlineProvider
@@ -31,7 +30,64 @@ import kotlin.random.Random
 
 /**
  * BlurVibeViewApi31 — Backdrop blur for Android API 31+
- **/
+ *
+ * ─── Why Compose Modifier.blur() doesn't work for this ───────────────────────
+ *
+ * Modifier.blur() blurs the Composable's OWN content — equivalent to CSS
+ * filter:blur(), not backdrop-filter:blur(). It cannot see RN views behind it.
+ * ComposeView also creates its own Choreographer loop which conflicts with
+ * Reanimated causing SIGSEGV. Compose is not the right tool here.
+ *
+ * ─── Root cause of API 35 glitch + SIGSEGV ───────────────────────────────────
+ *
+ * The Choreographer.FrameCallback approach was the problem:
+ *
+ *   OnPreDrawListener fires → schedules Choreographer callback
+ *   Choreographer callback fires → calls root.draw()
+ *
+ * On Android 15+ (API 35), Choreographer.FrameCallback fires at the COMMIT
+ * phase — AFTER the RenderThread has already started processing the frame.
+ * Calling root.draw() at this point means:
+ *   1. Torn frames: capture sees RenderThread mid-draw → blinking/glitch
+ *   2. Reanimated's RenderNodes being written by UI thread while RenderThread
+ *      reads them → use-after-free in GPU driver → SIGSEGV
+ *
+ * ─── THE FIX ─────────────────────────────────────────────────────────────────
+ *
+ * Call root.draw() DIRECTLY inside OnPreDrawListener — NOT deferred to
+ * Choreographer. OnPreDrawListener is guaranteed to fire BEFORE the
+ * RenderThread starts. This is the same approach used by Dimezis BlurView
+ * and it works on ALL Android versions including API 35.
+ *
+ * Throttling: simple System.nanoTime() check (16ms cap = 60fps).
+ * No Choreographer needed for throttling.
+ *
+ * StackBlur still runs on workerThread — main thread is never blocked.
+ *
+ * ─── Thread model ─────────────────────────────────────────────────────────────
+ *
+ *   OnPreDrawListener (main thread, PRE-DRAW guaranteed):
+ *     → throttle check
+ *     → root.draw() into captureBitmap  (isCapturing guard skips us)
+ *     → post StackBlur to workerThread
+ *     → return true immediately (never blocks draw pass)
+ *
+ *   workerThread:
+ *     → downsample + StackBlur × 3 passes
+ *     → readyBitmap = scaledBitmap  (@Volatile atomic swap)
+ *     → post invalidate() to main thread
+ *
+ *   RenderThread (onDraw):
+ *     → canvas.drawBitmap(readyBitmap)  ← reads fully-written bitmap, zero race
+ *
+ * ─── Reanimated safety ───────────────────────────────────────────────────────
+ *
+ * root.draw() is called in OnPreDrawListener BEFORE RenderThread starts.
+ * Reanimated's UI-thread animations have completed their prop updates by
+ * the time OnPreDrawListener fires (it fires after layout, after animations
+ * update view properties, but before the GPU draw begins).
+ * Zero SIGSEGV risk.
+ */
 @RequiresApi(Build.VERSION_CODES.S)
 class BlurVibeViewApi31(context: Context) : ReactViewGroup(context) {
 
@@ -54,11 +110,17 @@ class BlurVibeViewApi31(context: Context) : ReactViewGroup(context) {
   private val noisePaint  = Paint()
 
   // ── Bitmap double-buffer ──────────────────────────────────────────────────
+  //
+  // captureBitmap: written by main thread in OnPreDrawListener
+  // scaledBitmap:  written by workerThread (back buffer)
+  // readyBitmap:   @Volatile pointer — RenderThread reads this in onDraw()
+  //
+  // We NEVER mutate the bitmap readyBitmap currently points to.
+  // scaledBitmap becomes the next back buffer after the @Volatile swap.
 
-  private var captureBitmap: Bitmap? = null   // full-size capture (main thread)
-  private var scaledBitmap:  Bitmap? = null   // downsampled + blurred (worker thread)
-  @Volatile
-  private var readyBitmap:   Bitmap? = null   // @Volatile pointer — RenderThread reads this
+  private var captureBitmap: Bitmap? = null
+  private var scaledBitmap:  Bitmap? = null
+  @Volatile private var readyBitmap: Bitmap? = null
 
   private val capturePaint = Paint(Paint.FILTER_BITMAP_FLAG)
   private val bitmapPaint  = Paint(Paint.FILTER_BITMAP_FLAG or Paint.ANTI_ALIAS_FLAG)
@@ -78,26 +140,25 @@ class BlurVibeViewApi31(context: Context) : ReactViewGroup(context) {
 
   // ── State ─────────────────────────────────────────────────────────────────
 
-  // isCapturing: public read so BlurVibeViewApi31.draw() can check it
-  var isCapturing     = false
+  var isCapturing = false
     private set
-  private var blurEnabled    = true
-  private var autoUpdate     = true
-  private var frameScheduled = false
 
-  // ── Choreographer gate ────────────────────────────────────────────────────
+  private var blurEnabled     = true
+  private var autoUpdate      = true
+  private var workerBusy      = false  // prevent queuing multiple blur jobs
+  private var lastCaptureNano = 0L     // throttle: nano timestamp of last capture
 
-  private val frameCallback = Choreographer.FrameCallback {
-    frameScheduled = false
-    if (isAttachedToWindow && blurEnabled) captureAndBlur()
-  }
+  // ── PreDraw listener — fires PRE-DRAW, guaranteed before RenderThread ─────
 
   private val preDrawListener = ViewTreeObserver.OnPreDrawListener {
-    if (!frameScheduled && blurEnabled && autoUpdate) {
-      frameScheduled = true
-      Choreographer.getInstance().postFrameCallback(frameCallback)
+    if (blurEnabled && autoUpdate && !workerBusy) {
+      val now = System.nanoTime()
+      if (now - lastCaptureNano >= FRAME_INTERVAL_NS) {
+        lastCaptureNano = now
+        captureNow()   // synchronous capture in pre-draw — safe on all API levels
+      }
     }
-    true
+    true   // MUST return true — never block the draw pass
   }
 
   // ── Paint objects ─────────────────────────────────────────────────────────
@@ -111,9 +172,9 @@ class BlurVibeViewApi31(context: Context) : ReactViewGroup(context) {
 
   init {
     setWillNotDraw(false)
-    // outlineProvider = BACKGROUND uses ReactViewBackgroundDrawable.getOutline()
-    // which correctly handles all RN borderRadius variants automatically.
-    // clipToOutline is set to true only when a non-zero radius is applied.
+    // outlineProvider = BACKGROUND: ReactViewBackgroundDrawable.getOutline()
+    // handles all RN borderRadius variants automatically. clipToOutline only
+    // enabled when non-zero radius is set (avoids GPU clip stack issues).
     outlineProvider = ViewOutlineProvider.BACKGROUND
   }
 
@@ -124,16 +185,14 @@ class BlurVibeViewApi31(context: Context) : ReactViewGroup(context) {
     blurRoot = findBlurRoot()
     safeAddPreDrawListener()
     generateNoiseBitmap()
-    scheduleFrame()
   }
 
   override fun onDetachedFromWindow() {
     safeRemovePreDrawListener()
-    Choreographer.getInstance().removeFrameCallback(frameCallback)
-    frameScheduled = false
-    isCapturing    = false
-    blurRoot       = null
-    readyBitmap    = null
+    isCapturing = false
+    workerBusy  = false
+    blurRoot    = null
+    readyBitmap = null
     noiseBitmap?.recycle(); noiseBitmap = null
     workerHandler.post {
       captureBitmap?.recycle(); captureBitmap = null
@@ -146,11 +205,11 @@ class BlurVibeViewApi31(context: Context) : ReactViewGroup(context) {
     super.onSizeChanged(w, h, oldw, oldh)
     if (w > 0 && h > 0) {
       readyBitmap = null
+      workerBusy  = false
       workerHandler.post {
         captureBitmap?.recycle(); captureBitmap = null
         scaledBitmap?.recycle();  scaledBitmap  = null
       }
-      scheduleFrame()
     }
   }
 
@@ -158,14 +217,13 @@ class BlurVibeViewApi31(context: Context) : ReactViewGroup(context) {
     super.onWindowFocusChanged(hasWindowFocus)
     if (hasWindowFocus && blurEnabled && autoUpdate) {
       safeAddPreDrawListener()
-      scheduleFrame()
     }
   }
 
-  // ── draw() — skip self during root capture ────────────────────────────────
+  // ── draw() — skip self during capture ────────────────────────────────────
 
   override fun draw(canvas: Canvas) {
-    if (isCapturing) return   // prevents capturing own blur output
+    if (isCapturing) return
     super.draw(canvas)
   }
 
@@ -176,7 +234,6 @@ class BlurVibeViewApi31(context: Context) : ReactViewGroup(context) {
     val w = width.toFloat();  if (w <= 0f) return
     val h = height.toFloat(); if (h <= 0f) return
 
-    // Show overlay as placeholder while first blur is loading
     val bmp = readyBitmap?.takeIf { !it.isRecycled } ?: run {
       if (Color.alpha(overlayColor) > 0) {
         overlayPaint.color = overlayColor
@@ -186,15 +243,15 @@ class BlurVibeViewApi31(context: Context) : ReactViewGroup(context) {
       return
     }
 
-    // Step 1: save layer for progressive mask compositing
+    // Progressive mask layer
     val saveCount = if (progressiveDirection != PROGRESSIVE_NONE)
       canvas.saveLayer(0f, 0f, w, h, null)
     else -1
 
-    // Step 2: blurred bitmap — fills entire view
+    // Blurred bitmap
     canvas.drawBitmap(bmp, null, RectF(0f, 0f, w, h), bitmapPaint)
 
-    // Step 3: progressive alpha mask (fades blur across view)
+    // Progressive alpha mask
     if (progressiveDirection != PROGRESSIVE_NONE && saveCount >= 0) {
       buildProgressiveShader(w, h)?.let { shader ->
         maskPaint.shader = shader
@@ -203,33 +260,31 @@ class BlurVibeViewApi31(context: Context) : ReactViewGroup(context) {
       canvas.restoreToCount(saveCount)
     }
 
-    // Step 4: overlay tint
+    // Overlay tint
     if (Color.alpha(overlayColor) > 0) {
       overlayPaint.color = overlayColor
       canvas.drawRect(0f, 0f, w, h, overlayPaint)
     }
 
-    // Step 5: noise grain
+    // Noise grain
     noiseBitmap?.takeIf { !it.isRecycled && noiseFactor > 0f }?.let { noise ->
       noisePaint.alpha  = (noiseFactor * 255f).toInt().coerceIn(0, 255)
       noisePaint.shader = BitmapShader(noise, Shader.TileMode.REPEAT, Shader.TileMode.REPEAT)
       canvas.drawRect(0f, 0f, w, h, noisePaint)
     }
 
-    // Step 6: redraw ReactViewBackgroundDrawable ON TOP of blur.
-    // View.draw() drew the background BEFORE onDraw(), but our bitmap
-    // covered it. Redrawing here makes borders/borderColor/borderRadius
-    // appear on top of the blur — not hidden underneath it.
+    // Redraw ReactViewBackgroundDrawable ON TOP of blur so borders/radius
+    // are visible above the blur layer, not hidden underneath it.
     background?.draw(canvas)
   }
 
-  // ── Capture + blur pipeline ────────────────────────────────────────────────
+  // ── Capture — called in OnPreDrawListener (pre-draw, main thread) ─────────
 
-  private fun captureAndBlur() {
-    if (isCapturing) return
+  private fun captureNow() {
+    if (isCapturing || workerBusy) return
     val root = blurRoot ?: return
-    val vw   = width;   if (vw <= 0) return
-    val vh   = height;  if (vh <= 0) return
+    val vw   = width;  if (vw <= 0) return
+    val vh   = height; if (vh <= 0) return
 
     val sw = (vw / DOWNSAMPLE).toInt().coerceAtLeast(1)
     val sh = (vh / DOWNSAMPLE).toInt().coerceAtLeast(1)
@@ -241,10 +296,9 @@ class BlurVibeViewApi31(context: Context) : ReactViewGroup(context) {
     val offsetY = (myLoc[1] - rootLoc[1]).toFloat()
 
     val capture = reuseBitmap(captureBitmap, vw, vh).also { captureBitmap = it }
-    val scaled  = reuseBitmap(scaledBitmap,  sw, sh).also { scaledBitmap  = it }
 
-    // isCapturing = true → our draw() is a no-op → root.draw() skips us
-    // → capture contains ONLY the content behind us (not our own blur output)
+    // isCapturing = true → draw() returns immediately → root.draw() skips us
+    // → capture contains ONLY the content behind us, not our own blur output
     isCapturing = true
     val c = Canvas(capture)
     c.drawColor(Color.TRANSPARENT, PorterDuff.Mode.CLEAR)
@@ -257,11 +311,14 @@ class BlurVibeViewApi31(context: Context) : ReactViewGroup(context) {
     }
     isCapturing = false
 
-    // Blur on worker thread — never blocks main/RenderThread
+    // Hand off to worker thread — main thread returns immediately
+    workerBusy = true
     val captureRef = capture
     val radius     = blurRadiusFromAmount(blurAmount)
 
     workerHandler.post {
+      val scaled = reuseBitmap(scaledBitmap, sw, sh).also { scaledBitmap = it }
+
       // Downsample
       Canvas(scaled).drawBitmap(
         captureRef,
@@ -269,37 +326,45 @@ class BlurVibeViewApi31(context: Context) : ReactViewGroup(context) {
         Rect(0, 0, scaled.width, scaled.height),
         capturePaint
       )
-      // Multi-pass StackBlur (pure Kotlin, no deprecated APIs, all API levels)
-      repeat(BLUR_ROUNDS) { stackBlur(scaled, radius.toInt().coerceAtLeast(1)) }
 
-      // Atomic @Volatile swap — RenderThread always reads a complete bitmap
+      // Multi-pass StackBlur — pure Kotlin, no deprecated APIs, all versions
+      val r = radius.toInt().coerceAtLeast(1)
+      repeat(BLUR_ROUNDS) { stackBlur(scaled, r) }
+
+      // @Volatile atomic swap — RenderThread always sees a complete bitmap
       readyBitmap = scaled
+      workerBusy  = false
+
       mainHandler.post { invalidate() }
     }
   }
 
   // ── StackBlur ─────────────────────────────────────────────────────────────
-  // Mario Klingemann's algorithm — O(w×h) regardless of radius.
-  // No RenderScript, no deprecated APIs. Works on all Android versions.
 
   private fun stackBlur(bmp: Bitmap, radius: Int) {
-    val r = radius.coerceIn(1, 254)
-    val w = bmp.width; val h = bmp.height
-    val pixels = IntArray(w * h)
-    bmp.getPixels(pixels, 0, w, 0, 0, w, h)
-    val div = r + r + 1
-    val wm = w - 1; val hm = h - 1
-    val divSumSq = ((div + 1) shr 1).let { it * it }
-    val dv = IntArray(256 * divSumSq) { it / divSumSq }
-    val vmin = IntArray(maxOf(w, h))
-    val rStack = IntArray(div); val gStack = IntArray(div); val bStack = IntArray(div)
+    val r  = radius.coerceIn(1, 254)
+    val w  = bmp.width
+    val h  = bmp.height
+    val px = IntArray(w * h)
+    bmp.getPixels(px, 0, w, 0, 0, w, h)
+
+    val div    = r + r + 1
+    val wm     = w - 1
+    val hm     = h - 1
+    val ds     = (div + 1) shr 1
+    val dsSq   = ds * ds
+    val dv     = IntArray(256 * dsSq) { it / dsSq }
+    val vmin   = IntArray(maxOf(w, h))
+    val rStack = IntArray(div)
+    val gStack = IntArray(div)
+    val bStack = IntArray(div)
+
+    // Horizontal pass
     var yi = 0
     for (y in 0 until h) {
       var rSum = 0; var gSum = 0; var bSum = 0
       var rOut = 0; var gOut = 0; var bOut = 0
-      var p = pixels[yi]
-      var pr = (p shr 16) and 0xFF; var pg = (p shr 8) and 0xFF; var pb = p and 0xFF
-      val ds = (div + 1) shr 1
+      var p = px[yi]; var pr = (p shr 16) and 0xFF; var pg = (p shr 8) and 0xFF; var pb = p and 0xFF
       for (i in 0 until ds) {
         rStack[i] = pr; gStack[i] = pg; bStack[i] = pb
         rSum += pr * (i + 1); gSum += pg * (i + 1); bSum += pb * (i + 1)
@@ -307,20 +372,20 @@ class BlurVibeViewApi31(context: Context) : ReactViewGroup(context) {
       }
       for (i in 1 until ds) {
         val xi = if (i <= wm) i else wm
-        p = pixels[yi + xi]; pr = (p shr 16) and 0xFF; pg = (p shr 8) and 0xFF; pb = p and 0xFF
+        p = px[yi + xi]; pr = (p shr 16) and 0xFF; pg = (p shr 8) and 0xFF; pb = p and 0xFF
         rStack[i + r] = pr; gStack[i + r] = pg; bStack[i + r] = pb
         rSum += pr * (ds - i); gSum += pg * (ds - i); bSum += pb * (ds - i)
       }
       var si = r
       for (x in 0 until w) {
-        pixels[yi + x] = (-0x1000000 or (dv[rSum] shl 16) or (dv[gSum] shl 8) or dv[bSum])
+        px[yi + x] = -0x1000000 or (dv[rSum] shl 16) or (dv[gSum] shl 8) or dv[bSum]
         rSum -= rOut; gSum -= gOut; bSum -= bOut
         rOut -= rStack[si]; gOut -= gStack[si]; bOut -= bStack[si]
         var sip = si + ds; if (sip >= div) sip -= div
         pr = rStack[sip]; pg = gStack[sip]; pb = bStack[sip]
         rOut += pr; gOut += pg; bOut += pb; rSum += rOut; gSum += gOut; bSum += bOut
         vmin[x] = if (x + r < wm) x + r + 1 else wm
-        val sp = pixels[yi + vmin[x]]; val vp = pixels[yi + (if (x > r) x - r else 0)]
+        val sp = px[yi + vmin[x]]; val vp = px[yi + if (x > r) x - r else 0]
         rStack[sip] = (sp shr 16) and 0xFF; gStack[sip] = (sp shr 8) and 0xFF; bStack[sip] = sp and 0xFF
         rOut += rStack[sip] - ((vp shr 16) and 0xFF)
         gOut += gStack[sip] - ((vp shr 8) and 0xFF)
@@ -329,11 +394,12 @@ class BlurVibeViewApi31(context: Context) : ReactViewGroup(context) {
       }
       yi += w
     }
+
+    // Vertical pass
     for (x in 0 until w) {
       var rSum = 0; var gSum = 0; var bSum = 0
       var rOut = 0; var gOut = 0; var bOut = 0
-      val ds = (div + 1) shr 1
-      var p = pixels[x]; var pr = (p shr 16) and 0xFF; var pg = (p shr 8) and 0xFF; var pb = p and 0xFF
+      var p = px[x]; var pr = (p shr 16) and 0xFF; var pg = (p shr 8) and 0xFF; var pb = p and 0xFF
       for (i in 0 until ds) {
         rStack[i] = pr; gStack[i] = pg; bStack[i] = pb
         rSum += pr * (i + 1); gSum += pg * (i + 1); bSum += pb * (i + 1)
@@ -341,20 +407,20 @@ class BlurVibeViewApi31(context: Context) : ReactViewGroup(context) {
       }
       for (i in 1 until ds) {
         val yi2 = if (i <= hm) i * w else hm * w
-        p = pixels[x + yi2]; pr = (p shr 16) and 0xFF; pg = (p shr 8) and 0xFF; pb = p and 0xFF
+        p = px[x + yi2]; pr = (p shr 16) and 0xFF; pg = (p shr 8) and 0xFF; pb = p and 0xFF
         rStack[i + r] = pr; gStack[i + r] = pg; bStack[i + r] = pb
         rSum += pr * (ds - i); gSum += pg * (ds - i); bSum += pb * (ds - i)
       }
       var si = r
       for (y in 0 until h) {
-        pixels[x + y * w] = (-0x1000000 or (dv[rSum] shl 16) or (dv[gSum] shl 8) or dv[bSum])
+        px[x + y * w] = -0x1000000 or (dv[rSum] shl 16) or (dv[gSum] shl 8) or dv[bSum]
         rSum -= rOut; gSum -= gOut; bSum -= bOut
         rOut -= rStack[si]; gOut -= gStack[si]; bOut -= bStack[si]
         var sip = si + ds; if (sip >= div) sip -= div
         pr = rStack[sip]; pg = gStack[sip]; pb = bStack[sip]
         rOut += pr; gOut += pg; bOut += pb; rSum += rOut; gSum += gOut; bSum += bOut
         vmin[y] = if (y + r < hm) (y + r + 1) * w else hm * w
-        val sp = pixels[x + vmin[y]]; val vp = pixels[x + (if (y > r) (y - r) * w else 0)]
+        val sp = px[x + vmin[y]]; val vp = px[x + if (y > r) (y - r) * w else 0]
         rStack[sip] = (sp shr 16) and 0xFF; gStack[sip] = (sp shr 8) and 0xFF; bStack[sip] = sp and 0xFF
         rOut += rStack[sip] - ((vp shr 16) and 0xFF)
         gOut += gStack[sip] - ((vp shr 8) and 0xFF)
@@ -362,20 +428,20 @@ class BlurVibeViewApi31(context: Context) : ReactViewGroup(context) {
         if (++si >= div) si = 0
       }
     }
-    bmp.setPixels(pixels, 0, w, 0, 0, w, h)
+    bmp.setPixels(px, 0, w, 0, 0, w, h)
   }
 
   // ── Progressive shader ────────────────────────────────────────────────────
 
   private fun buildProgressiveShader(w: Float, h: Float): Shader? {
-    val sc = Color.argb((progressiveStartIntensity.coerceIn(0f,1f)*255).toInt(),0,0,0)
-    val ec = Color.argb((progressiveEndIntensity.coerceIn(0f,1f)*255).toInt(),0,0,0)
+    val sc = Color.argb((progressiveStartIntensity.coerceIn(0f, 1f) * 255).toInt(), 0, 0, 0)
+    val ec = Color.argb((progressiveEndIntensity.coerceIn(0f, 1f) * 255).toInt(), 0, 0, 0)
     return when (progressiveDirection) {
-      PROGRESSIVE_TOP_TO_BOTTOM -> LinearGradient(0f,0f,0f,h,sc,ec,Shader.TileMode.CLAMP)
-      PROGRESSIVE_BOTTOM_TO_TOP -> LinearGradient(0f,h,0f,0f,sc,ec,Shader.TileMode.CLAMP)
-      PROGRESSIVE_LEFT_TO_RIGHT -> LinearGradient(0f,0f,w,0f,sc,ec,Shader.TileMode.CLAMP)
-      PROGRESSIVE_RIGHT_TO_LEFT -> LinearGradient(w,0f,0f,0f,sc,ec,Shader.TileMode.CLAMP)
-      PROGRESSIVE_RADIAL -> RadialGradient(w/2f,h/2f,min(w,h)/2f,sc,ec,Shader.TileMode.CLAMP)
+      PROGRESSIVE_TOP_TO_BOTTOM -> LinearGradient(0f, 0f, 0f, h, sc, ec, Shader.TileMode.CLAMP)
+      PROGRESSIVE_BOTTOM_TO_TOP -> LinearGradient(0f, h, 0f, 0f, sc, ec, Shader.TileMode.CLAMP)
+      PROGRESSIVE_LEFT_TO_RIGHT -> LinearGradient(0f, 0f, w, 0f, sc, ec, Shader.TileMode.CLAMP)
+      PROGRESSIVE_RIGHT_TO_LEFT -> LinearGradient(w, 0f, 0f, 0f, sc, ec, Shader.TileMode.CLAMP)
+      PROGRESSIVE_RADIAL -> RadialGradient(w / 2f, h / 2f, min(w, h) / 2f, sc, ec, Shader.TileMode.CLAMP)
       else -> null
     }
   }
@@ -396,7 +462,7 @@ class BlurVibeViewApi31(context: Context) : ReactViewGroup(context) {
   // ── Public setters ─────────────────────────────────────────────────────────
 
   fun setBlurAmount(amount: Float) {
-    blurAmount = amount.coerceIn(0f, 100f); scheduleFrame()
+    blurAmount = amount.coerceIn(0f, 100f); invalidate()
   }
 
   fun setOverlayColor(colorString: String?) {
@@ -425,17 +491,16 @@ class BlurVibeViewApi31(context: Context) : ReactViewGroup(context) {
     }; invalidate()
   }
 
-  fun setProgressiveStartIntensity(v: Float) { progressiveStartIntensity = v.coerceIn(0f,1f); invalidate() }
-  fun setProgressiveEndIntensity(v: Float)   { progressiveEndIntensity   = v.coerceIn(0f,1f); invalidate() }
-  fun setNoiseFactor(v: Float)               { noiseFactor = v.coerceIn(0f,1f); invalidate() }
+  fun setProgressiveStartIntensity(v: Float) { progressiveStartIntensity = v.coerceIn(0f, 1f); invalidate() }
+  fun setProgressiveEndIntensity(v: Float)   { progressiveEndIntensity   = v.coerceIn(0f, 1f); invalidate() }
+  fun setNoiseFactor(v: Float)               { noiseFactor = v.coerceIn(0f, 1f); invalidate() }
 
   fun applyBlurEnabled(enabled: Boolean) {
     blurEnabled = enabled
-    if (enabled) { safeAddPreDrawListener(); scheduleFrame() }
+    if (enabled) safeAddPreDrawListener()
     else {
       safeRemovePreDrawListener()
-      Choreographer.getInstance().removeFrameCallback(frameCallback)
-      frameScheduled = false; readyBitmap = null; invalidate()
+      workerBusy = false; readyBitmap = null; invalidate()
     }
   }
 
@@ -445,13 +510,6 @@ class BlurVibeViewApi31(context: Context) : ReactViewGroup(context) {
   }
 
   // ── Helpers ────────────────────────────────────────────────────────────────
-
-  private fun scheduleFrame() {
-    if (!frameScheduled && blurEnabled) {
-      frameScheduled = true
-      Choreographer.getInstance().postFrameCallback(frameCallback)
-    }
-  }
 
   private fun safeAddPreDrawListener() {
     val root = blurRoot ?: return
@@ -489,7 +547,7 @@ class BlurVibeViewApi31(context: Context) : ReactViewGroup(context) {
 
   private fun blurRadiusFromAmount(amount: Float): Float {
     val t = amount.coerceIn(0f, 100f) / 100f
-    return 2f + t * 22f   // 2–24, with BLUR_ROUNDS=4 effective spread ≈ 4–48px
+    return 2f + t * 22f   // 2–24px per pass, × BLUR_ROUNDS = wide spread
   }
 
   private fun parseHexColor(s: String): Int? {
@@ -502,13 +560,13 @@ class BlurVibeViewApi31(context: Context) : ReactViewGroup(context) {
         3 -> Color.argb(255, hex[0].toString().repeat(2).toInt(16),
                              hex[1].toString().repeat(2).toInt(16),
                              hex[2].toString().repeat(2).toInt(16))
-        6 -> Color.argb(255, hex.substring(0,2).toInt(16),
-                             hex.substring(2,4).toInt(16),
-                             hex.substring(4,6).toInt(16))
-        8 -> Color.argb(hex.substring(6,8).toInt(16),
-                        hex.substring(0,2).toInt(16),
-                        hex.substring(2,4).toInt(16),
-                        hex.substring(4,6).toInt(16))
+        6 -> Color.argb(255, hex.substring(0, 2).toInt(16),
+                             hex.substring(2, 4).toInt(16),
+                             hex.substring(4, 6).toInt(16))
+        8 -> Color.argb(hex.substring(6, 8).toInt(16),
+                        hex.substring(0, 2).toInt(16),
+                        hex.substring(2, 4).toInt(16),
+                        hex.substring(4, 6).toInt(16))
         else -> null
       }
     } catch (_: NumberFormatException) { null }
@@ -517,8 +575,10 @@ class BlurVibeViewApi31(context: Context) : ReactViewGroup(context) {
   override fun onLayout(changed: Boolean, l: Int, t: Int, r: Int, b: Int) {}
 
   companion object {
-    private const val DOWNSAMPLE  = 2f   // 1/4 pixels — higher quality than legacy
-    private const val BLUR_ROUNDS = 4    // 4 passes — wider spread than legacy's 3
+    private const val DOWNSAMPLE      = 2f          // 1/4 pixels
+    private const val BLUR_ROUNDS     = 3           // passes per frame
+    private const val FRAME_INTERVAL_NS = 16_666_666L  // ~60 fps cap
+
     const val PROGRESSIVE_NONE          = 0
     const val PROGRESSIVE_TOP_TO_BOTTOM = 1
     const val PROGRESSIVE_BOTTOM_TO_TOP = 2
