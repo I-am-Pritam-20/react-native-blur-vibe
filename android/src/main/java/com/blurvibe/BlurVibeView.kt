@@ -13,7 +13,8 @@ import com.facebook.react.views.view.ReactViewGroup
 
 /**
  * BlurVibeView — Android API 21–30 backdrop blur.
- **/
+ *
+ */
 class BlurVibeView(context: Context) : ReactViewGroup(context) {
 
   private var blurController: LegacyBlurController? = null
@@ -45,9 +46,6 @@ class BlurVibeView(context: Context) : ReactViewGroup(context) {
 
   override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
     super.onSizeChanged(w, h, oldw, oldh)
-    // LegacyBlurController.onSizeChanged() takes no params — it just
-    // invalidates the bitmap pool so the next capture re-allocates at
-    // the new size (it reads view.width/view.height directly).
     blurController?.onSizeChanged()
   }
 
@@ -111,8 +109,11 @@ class BlurVibeView(context: Context) : ReactViewGroup(context) {
   // ── Helpers ────────────────────────────────────────────────────────────────
 
   private fun mapBlurAmount(amount: Float): Float {
-    val t = amount.coerceIn(0f, 100f) / 100f
-    return 2f + t * 22f
+    // blurAmount=10  → felt≈10.9 → local≈1.8   (backdrop-blur-sm)
+    // blurAmount=50  → felt≈50.5 → local≈8.4   (backdrop-blur-xl)
+    // blurAmount=100 → felt=100  → local≈16.7  (maximum, within RenderScript's 25 cap)
+    val felt = 1f + (amount.coerceIn(0f, 100f) / 100f) * 99f
+    return (felt / 6f).coerceIn(1f, 25f)   // RenderScript max radius is 25
   }
 
   private fun findBlurRoot(): ViewGroup? {

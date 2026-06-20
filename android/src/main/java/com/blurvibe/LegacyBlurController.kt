@@ -18,13 +18,6 @@ import android.view.ViewTreeObserver
 /**
  * LegacyBlurController — zero-dependency backdrop blur for Android API 21–30.
  *
- * Uses Android SDK RenderScript (ScriptIntrinsicBlur) — no external library.
- *
- * THE STATIC BLUR FIX:
- * Before root.draw(), BlurVibeView.draw() is made a no-op via isCapturing flag.
- * This means root.draw() skips the BlurView during capture, so we capture
- * ONLY the content behind us — not our own previous blur output.
- * Without this, each frame captures the previous blur → blur appears static.
  */
 @Suppress("DEPRECATION")
 internal class LegacyBlurController(
@@ -33,17 +26,13 @@ internal class LegacyBlurController(
 ) {
 
   companion object {
-    // DOWNSAMPLE_FACTOR = 2: capture at 1/4 pixels (less than before).
-    // Less downsampling = higher quality capture = crisper blur result.
-    // The blur hides pixel detail so 1/4 is the sweet spot.
-    private const val DOWNSAMPLE_FACTOR = 2f
+    private const val DOWNSAMPLE_FACTOR = 6f
 
-    // Default radius when blurAmount maps here.
-    // The actual radius per frame comes from view.blurRadius set by setBlurAmount().
     private const val BLUR_RADIUS = 25f  // max RenderScript kernel
 
-    // 3 rounds: more passes = wider spread = true frosted glass feel
-    private const val BLUR_ROUNDS = 3
+    private const val BLUR_ROUNDS = 1
+
+    private const val FRAME_INTERVAL_NS = 33_333_333L  // ~30fps cap
   }
 
   // ── Bitmap pool ────────────────────────────────────────────────────────────
@@ -73,18 +62,23 @@ internal class LegacyBlurController(
       else rootView.viewTreeObserver.removeOnPreDrawListener(preDrawListener)
     }
 
-  // isCapturing: set true before root.draw() so BlurVibeView.draw() is a no-op
-  // preventing stale self-capture. Accessed by BlurVibeView.draw().
   var isCapturing = false
     private set
 
   private var frameScheduled = false
+  private var lastCaptureNs  = 0L
 
   // ── Choreographer gate ────────────────────────────────────────────────────
 
   private val frameCallback = Choreographer.FrameCallback {
     frameScheduled = false
-    if (enabled) captureAndBlur()
+    if (enabled) {
+      val now = System.nanoTime()
+      if (now - lastCaptureNs >= FRAME_INTERVAL_NS) {
+        lastCaptureNs = now
+        captureAndBlur()
+      }
+    }
   }
 
   private val preDrawListener = ViewTreeObserver.OnPreDrawListener {

@@ -29,7 +29,12 @@ import kotlin.random.Random
 
 /**
  * BlurVibeViewApi31 — Backdrop blur for Android API 31+
- **/
+ *
+ * ─── Style props (borderRadius, borderWidth, borderColor) ───────────────────
+ *   outlineProvider = BACKGROUND: ReactViewBackgroundDrawable.getOutline() handles
+ *   all RN borderRadius variants. clipToOutline only enabled when radius > 0.
+ *   background?.draw(canvas) at END of onDraw() redraws border ON TOP of blur.
+ */
 @RequiresApi(Build.VERSION_CODES.S)
 class BlurVibeViewApi31(context: Context) : ReactViewGroup(context) {
 
@@ -69,12 +74,17 @@ class BlurVibeViewApi31(context: Context) : ReactViewGroup(context) {
 
   private var blurEnabled = true
   private var autoUpdate  = true
+  private var lastCaptureNs = 0L
 
-  // ── PreDraw listener — fires BEFORE RenderThread (guaranteed) ─────────────
+  // ── PreDraw listener — fires BEFORE RenderThread ─────────────
 
   private val preDrawListener = ViewTreeObserver.OnPreDrawListener {
     if (blurEnabled && autoUpdate && initialized) {
-      updateCapture()
+      val now = System.nanoTime()
+      if (now - lastCaptureNs >= FRAME_INTERVAL_NS) {
+        lastCaptureNs = now
+        updateCapture()
+      }
     }
     true
   }
@@ -129,7 +139,7 @@ class BlurVibeViewApi31(context: Context) : ReactViewGroup(context) {
     val w = measuredWidth;  if (w <= 0) return
     val h = measuredHeight; if (h <= 0) return
 
-    // Round to stride alignment (Samsung OEM requirement — SizeScaler)
+    // Round to stride alignment (Samsung OEM requirement)
     val scaledW = roundToStride((w / SCALE_FACTOR).toInt().coerceAtLeast(1))
     val roundScale = w.toFloat() / scaledW
     val scaledH = (h / roundScale).toInt().coerceAtLeast(1)
@@ -148,14 +158,13 @@ class BlurVibeViewApi31(context: Context) : ReactViewGroup(context) {
     return v - (v % ROUNDING_VALUE) + ROUNDING_VALUE
   }
 
-  // ── Capture (PreDrawBlurController.updateBlur() equivalent) ───────
+  // ── Capture  ───────
 
   private fun updateCapture() {
     val root   = blurRoot       ?: return
     val bitmap = capturedBitmap ?: return
     val canvas = captureCanvas  ?: return
     if (bitmap.isRecycled) return
-
     root.getLocationOnScreen(rootLocation)
     getLocationOnScreen(blurViewLocation)
 
@@ -172,7 +181,6 @@ class BlurVibeViewApi31(context: Context) : ReactViewGroup(context) {
     canvas.save()
     canvas.translate(scaledLeft, scaledTop)
     canvas.scale(1f / scaleFactorW, 1f / scaleFactorH)
-
     try {
       root.draw(canvas)
     } catch (e: Exception) {
@@ -210,10 +218,8 @@ class BlurVibeViewApi31(context: Context) : ReactViewGroup(context) {
 
   // ── Hardware path (API 31+, normal case) ──────────────────────────────────
 
-
   private fun drawHardwarePath(canvas: Canvas, bmp: Bitmap, w: Float, h: Float) {
-    val radius     = blurRadiusFromAmount(blurAmount)
-    val realRadius = (radius * SCALE_FACTOR).coerceAtLeast(1f)
+    val localRadius = localBlurRadius(blurAmount)
 
     // Fresh RenderNode per frame
     val blurNode = RenderNode("BlurVibeFrame")
@@ -222,10 +228,8 @@ class BlurVibeViewApi31(context: Context) : ReactViewGroup(context) {
     val nodeCanvas = blurNode.beginRecording()
     nodeCanvas.drawBitmap(bmp, 0f, 0f, bitmapPaint)
     blurNode.endRecording()
-
-    // Apply RenderEffect — GPU blur
     blurNode.setRenderEffect(
-      RenderEffect.createBlurEffect(realRadius, realRadius, Shader.TileMode.CLAMP)
+      RenderEffect.createBlurEffect(localRadius, localRadius, Shader.TileMode.CLAMP)
     )
 
     // Progressive mask requires saveLayer
@@ -236,7 +240,6 @@ class BlurVibeViewApi31(context: Context) : ReactViewGroup(context) {
     canvas.save()
     val scaleW = w / bmp.width
     val scaleH = h / bmp.height
-    // Clip to BlurView bounds
     canvas.clipRect(0f, 0f, w, h)
     canvas.scale(scaleW, scaleH)
     canvas.drawRenderNode(blurNode)
@@ -263,7 +266,6 @@ class BlurVibeViewApi31(context: Context) : ReactViewGroup(context) {
       noisePaint.shader = BitmapShader(noise, Shader.TileMode.REPEAT, Shader.TileMode.REPEAT)
       canvas.drawRect(0f, 0f, w, h, noisePaint)
     }
-
     background?.draw(canvas)
   }
 
@@ -400,13 +402,12 @@ class BlurVibeViewApi31(context: Context) : ReactViewGroup(context) {
 
   // ── Helpers ────────────────────────────────────────────────────────────────
 
-  private fun blurRadiusFromAmount(amount: Float): Float {
-    // Linear 0→100 maps to 1→25. Real GPU radius = this * SCALE_FACTOR
-    // blurAmount=10  → radius=3.4  → GPU radius ≈ 20px  (backdrop-blur-sm)
-    // blurAmount=50  → radius=13   → GPU radius ≈ 78px  (backdrop-blur-xl)
-    // blurAmount=100 → radius=25   → GPU radius ≈ 150px (maximum)
-    val t = amount.coerceIn(0f, 100f) / 100f
-    return 1f + t * 24f
+  private fun localBlurRadius(amount: Float): Float {
+    // blurAmount=10  → felt≈10.9 → local≈1.8   (backdrop-blur-sm)
+    // blurAmount=50  → felt≈50.5 → local≈8.4   (backdrop-blur-xl)
+    // blurAmount=100 → felt=100  → local≈16.7  (maximum)
+    val felt = 1f + (amount.coerceIn(0f, 100f) / 100f) * 99f
+    return (felt / SCALE_FACTOR).coerceIn(0.5f, 40f)
   }
 
   private fun parseHexColor(s: String): Int? {
@@ -434,8 +435,9 @@ class BlurVibeViewApi31(context: Context) : ReactViewGroup(context) {
   override fun onLayout(changed: Boolean, l: Int, t: Int, r: Int, b: Int) {}
 
   companion object {
-    private const val SCALE_FACTOR   = 6f  
+    private const val SCALE_FACTOR   = 6f   // Default scaleFactor
     private const val ROUNDING_VALUE = 64   // stride alignment (Samsung)
+    private const val FRAME_INTERVAL_NS = 33_333_333L  // ~30fps cap
     const val PROGRESSIVE_NONE          = 0
     const val PROGRESSIVE_TOP_TO_BOTTOM = 1
     const val PROGRESSIVE_BOTTOM_TO_TOP = 2
