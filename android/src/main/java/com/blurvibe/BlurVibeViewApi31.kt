@@ -29,50 +29,7 @@ import kotlin.random.Random
 
 /**
  * BlurVibeViewApi31 — Backdrop blur for Android API 31+
- *
- * ─── Architecture (from deep reading of Dimezis BlurView source) ──────────────
- *
- * PreDrawBlurController (Dimezis, API < 31):
- *   onPreDraw() → rootView.draw(BlurViewCanvas) → blurAlgorithm.blur() → done
- *   No worker thread, no Choreographer, fully synchronous in onPreDraw.
- *   BlurViewCanvas is a MARKER CANVAS — draw() skips itself when canvas is this type.
- *
- * RenderNodeBlurController (Dimezis, API 31+):
- *   BlurTarget.dispatchDraw() records children into BlurTarget.renderNode.
- *   BlurView.draw() reads target.renderNode → blurNode → RenderEffect → screen.
- *   RenderThread-safe because target.renderNode is fully recorded BEFORE BlurView draws.
- *   We can't use this pattern (no BlurTarget in RN).
- *
- * ─── Our approach for API 31+ ─────────────────────────────────────────────────
- *
- * Step 1 — Capture (in OnPreDrawListener, synchronous, main thread):
- *   rootView.draw(BlurVibeCanvas) → downsampled bitmap
- *   BlurVibeCanvas marker → BlurVibeView.draw() returns immediately → self excluded
- *
- * Step 2 — RenderEffect in onDraw() (per-frame RenderNode pattern):
- *   Each onDraw() creates a fresh RenderNode for that frame.
- *   beginRecording() → drawBitmap(capturedBitmap) → endRecording()
- *   setRenderEffect(RenderEffect.createBlurEffect(radius * SCALE_FACTOR))
- *   canvas.drawRenderNode(freshNode)
- *
- *   WHY THIS IS THREAD-SAFE (unlike our previous RenderNode approach):
- *   Previous crash: Choreographer callback recorded blurNode (main thread)
- *                   while RenderThread replayed the SAME blurNode from last frame.
- *   This approach: each frame creates a DIFFERENT RenderNode object.
- *   RenderThread replays nodeN (immutable after endRecording).
- *   Main thread creates nodeN+1 (a completely different object).
- *   No shared mutable state between threads. Zero SIGSEGV.
- *
- *   Radius scaling (from Dimezis RenderNodeBlurController.applyBlur()):
- *   realRadius = blurRadius * scaleFactor
- *   Because the bitmap is already downsampled by scaleFactor, the RenderEffect
- *   radius must be scaled up proportionally to produce the correct visual blur.
- *
- * ─── Style props (borderRadius, borderWidth, borderColor) ───────────────────
- *   outlineProvider = BACKGROUND: ReactViewBackgroundDrawable.getOutline() handles
- *   all RN borderRadius variants. clipToOutline only enabled when radius > 0.
- *   background?.draw(canvas) at END of onDraw() redraws border ON TOP of blur.
- */
+ **/
 @RequiresApi(Build.VERSION_CODES.S)
 class BlurVibeViewApi31(context: Context) : ReactViewGroup(context) {
 
@@ -95,12 +52,6 @@ class BlurVibeViewApi31(context: Context) : ReactViewGroup(context) {
   private val noisePaint  = Paint()
 
   // ── Capture bitmap ────────────────────────────────────────────────────────
-  //
-  // Single bitmap, captured and reused each frame.
-  // No worker thread needed — RenderEffect does the GPU blur.
-  // Thread safety: onDraw() reads capturedBitmap via a per-frame RenderNode
-  // (new object each frame). Capture writes capturedBitmap in preDrawListener
-  // BEFORE onDraw() is called. Sequential — no concurrent access.
 
   private var capturedBitmap: Bitmap? = null
   private var captureCanvas: BlurVibeCanvas? = null
@@ -120,12 +71,6 @@ class BlurVibeViewApi31(context: Context) : ReactViewGroup(context) {
   private var autoUpdate  = true
 
   // ── PreDraw listener — fires BEFORE RenderThread (guaranteed) ─────────────
-  //
-  // Dimezis PreDrawBlurController does EXACTLY this:
-  //   onPreDraw() { updateBlur(); return true; }
-  // updateBlur() calls rootView.draw(internalCanvas) synchronously.
-  // No Choreographer, no worker thread for capture.
-  // We match this exactly.
 
   private val preDrawListener = ViewTreeObserver.OnPreDrawListener {
     if (blurEnabled && autoUpdate && initialized) {
@@ -184,7 +129,7 @@ class BlurVibeViewApi31(context: Context) : ReactViewGroup(context) {
     val w = measuredWidth;  if (w <= 0) return
     val h = measuredHeight; if (h <= 0) return
 
-    // Round to stride alignment (Samsung OEM requirement — Dimezis SizeScaler)
+    // Round to stride alignment (Samsung OEM requirement — SizeScaler)
     val scaledW = roundToStride((w / SCALE_FACTOR).toInt().coerceAtLeast(1))
     val roundScale = w.toFloat() / scaledW
     val scaledH = (h / roundScale).toInt().coerceAtLeast(1)
@@ -195,7 +140,7 @@ class BlurVibeViewApi31(context: Context) : ReactViewGroup(context) {
     initialized    = true
 
     safeAddPreDrawListener()
-    updateCapture()  // initial capture (Dimezis does this too)
+    updateCapture()  // initial capture
   }
 
   private fun roundToStride(v: Int): Int {
@@ -203,7 +148,7 @@ class BlurVibeViewApi31(context: Context) : ReactViewGroup(context) {
     return v - (v % ROUNDING_VALUE) + ROUNDING_VALUE
   }
 
-  // ── Capture (Dimezis PreDrawBlurController.updateBlur() equivalent) ───────
+  // ── Capture (PreDrawBlurController.updateBlur() equivalent) ───────
 
   private fun updateCapture() {
     val root   = blurRoot       ?: return
@@ -211,7 +156,6 @@ class BlurVibeViewApi31(context: Context) : ReactViewGroup(context) {
     val canvas = captureCanvas  ?: return
     if (bitmap.isRecycled) return
 
-    // Dimezis setupInternalCanvasMatrix()
     root.getLocationOnScreen(rootLocation)
     getLocationOnScreen(blurViewLocation)
 
@@ -229,10 +173,6 @@ class BlurVibeViewApi31(context: Context) : ReactViewGroup(context) {
     canvas.translate(scaledLeft, scaledTop)
     canvas.scale(1f / scaleFactorW, 1f / scaleFactorH)
 
-    // rootView.draw(BlurVibeCanvas):
-    //   BlurVibeView.draw() detects BlurVibeCanvas → returns immediately (skips self)
-    //   All other views draw normally → we capture content BEHIND our view
-    //   Exceptions caught silently (Dimezis pattern)
     try {
       root.draw(canvas)
     } catch (e: Exception) {
@@ -247,12 +187,6 @@ class BlurVibeViewApi31(context: Context) : ReactViewGroup(context) {
   }
 
   // ── draw() — skip self during capture ────────────────────────────────────
-  //
-  // Dimezis BlurView.draw():
-  //   if (canvas instanceof BlurViewCanvas) return false;
-  //
-  // BlurVibeCanvas is a marker. Real screen draws use the hardware display
-  // canvas — never a BlurVibeCanvas. Zero race condition with Reanimated.
 
   override fun draw(canvas: Canvas) {
     if (canvas is BlurVibeCanvas) return
@@ -275,25 +209,13 @@ class BlurVibeViewApi31(context: Context) : ReactViewGroup(context) {
   }
 
   // ── Hardware path (API 31+, normal case) ──────────────────────────────────
-  //
-  // Per-frame RenderNode + RenderEffect.createBlurEffect()
-  //
-  // Thread safety proof:
-  //   All of beginRecording/endRecording/drawRenderNode happen inside
-  //   this single onDraw() call during display list recording (main thread).
-  //   RenderThread replays blurNode from frame N — a fully-recorded, immutable node.
-  //   Main thread creates blurNode for frame N+1 — a DIFFERENT object.
-  //   No shared mutable state between threads.
-  //
-  // Radius scaling (Dimezis RenderNodeBlurController):
-  //   realRadius = blurRadius * scaleFactor
-  //   Bitmap is at 1/SCALE_FACTOR resolution, so radius must be scaled up.
+
 
   private fun drawHardwarePath(canvas: Canvas, bmp: Bitmap, w: Float, h: Float) {
     val radius     = blurRadiusFromAmount(blurAmount)
     val realRadius = (radius * SCALE_FACTOR).coerceAtLeast(1f)
 
-    // Fresh RenderNode per frame — Dimezis's hardware path equivalent
+    // Fresh RenderNode per frame
     val blurNode = RenderNode("BlurVibeFrame")
     blurNode.setPosition(0, 0, bmp.width, bmp.height)
 
@@ -301,7 +223,7 @@ class BlurVibeViewApi31(context: Context) : ReactViewGroup(context) {
     nodeCanvas.drawBitmap(bmp, 0f, 0f, bitmapPaint)
     blurNode.endRecording()
 
-    // Apply RenderEffect — GPU blur (same as Dimezis RenderNodeBlurController.applyBlur())
+    // Apply RenderEffect — GPU blur
     blurNode.setRenderEffect(
       RenderEffect.createBlurEffect(realRadius, realRadius, Shader.TileMode.CLAMP)
     )
@@ -314,7 +236,7 @@ class BlurVibeViewApi31(context: Context) : ReactViewGroup(context) {
     canvas.save()
     val scaleW = w / bmp.width
     val scaleH = h / bmp.height
-    // Clip to BlurView bounds (Dimezis: "Don't draw outside BlurView bounds")
+    // Clip to BlurView bounds
     canvas.clipRect(0f, 0f, w, h)
     canvas.scale(scaleW, scaleH)
     canvas.drawRenderNode(blurNode)
@@ -342,8 +264,6 @@ class BlurVibeViewApi31(context: Context) : ReactViewGroup(context) {
       canvas.drawRect(0f, 0f, w, h, noisePaint)
     }
 
-    // Redraw ReactViewBackgroundDrawable ON TOP of blur
-    // Borders/borderRadius/borderColor appear above the blur layer
     background?.draw(canvas)
   }
 
@@ -442,7 +362,6 @@ class BlurVibeViewApi31(context: Context) : ReactViewGroup(context) {
   }
 
   // ── PreDrawListener helpers ────────────────────────────────────────────────
-  // Dimezis: attach to BOTH root VTO and blurView VTO for Dialog window support
 
   private fun safeAddPreDrawListener() {
     val root = blurRoot ?: return
@@ -482,7 +401,7 @@ class BlurVibeViewApi31(context: Context) : ReactViewGroup(context) {
   // ── Helpers ────────────────────────────────────────────────────────────────
 
   private fun blurRadiusFromAmount(amount: Float): Float {
-    // Linear 0→100 maps to 1→25. Real GPU radius = this * SCALE_FACTOR (Dimezis pattern).
+    // Linear 0→100 maps to 1→25. Real GPU radius = this * SCALE_FACTOR
     // blurAmount=10  → radius=3.4  → GPU radius ≈ 20px  (backdrop-blur-sm)
     // blurAmount=50  → radius=13   → GPU radius ≈ 78px  (backdrop-blur-xl)
     // blurAmount=100 → radius=25   → GPU radius ≈ 150px (maximum)
@@ -515,7 +434,7 @@ class BlurVibeViewApi31(context: Context) : ReactViewGroup(context) {
   override fun onLayout(changed: Boolean, l: Int, t: Int, r: Int, b: Int) {}
 
   companion object {
-    private const val SCALE_FACTOR   = 6f   // Dimezis default scaleFactor
+    private const val SCALE_FACTOR   = 6f  
     private const val ROUNDING_VALUE = 64   // stride alignment (Samsung)
     const val PROGRESSIVE_NONE          = 0
     const val PROGRESSIVE_TOP_TO_BOTTOM = 1

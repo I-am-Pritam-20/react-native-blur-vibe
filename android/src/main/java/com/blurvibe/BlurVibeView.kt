@@ -13,13 +13,7 @@ import com.facebook.react.views.view.ReactViewGroup
 
 /**
  * BlurVibeView — Android API 21–30 backdrop blur.
- *
- * The draw() override is the critical piece:
- *   if (canvas is BlurVibeCanvas) return
- * This skips drawing ourselves when LegacyBlurController is capturing the
- * background content. BlurVibeCanvas is a typed marker — no boolean flag,
- * no race condition with Reanimated. Identical to Dimezis BlurView pattern.
- */
+ **/
 class BlurVibeView(context: Context) : ReactViewGroup(context) {
 
   private var blurController: LegacyBlurController? = null
@@ -51,7 +45,10 @@ class BlurVibeView(context: Context) : ReactViewGroup(context) {
 
   override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
     super.onSizeChanged(w, h, oldw, oldh)
-    blurController?.onSizeChanged(w, h)
+    // LegacyBlurController.onSizeChanged() takes no params — it just
+    // invalidates the bitmap pool so the next capture re-allocates at
+    // the new size (it reads view.width/view.height directly).
+    blurController?.onSizeChanged()
   }
 
   override fun onWindowFocusChanged(hasWindowFocus: Boolean) {
@@ -59,14 +56,10 @@ class BlurVibeView(context: Context) : ReactViewGroup(context) {
     if (hasWindowFocus) blurController?.reAttach()
   }
 
-  // ── KEY: skip self when being captured (BlurVibeCanvas pattern) ───────────
+  // ── KEY: skip self when being captured (isCapturing flag) ─────────────────
 
   override fun draw(canvas: Canvas) {
-    // BlurVibeCanvas is our background capture canvas.
-    // Returning here makes us invisible to root.draw() during capture,
-    // so we capture ONLY the content behind us — not our own blur output.
-    // Real screen draws always use the hardware display canvas, never BlurVibeCanvas.
-    if (canvas is BlurVibeCanvas) return
+    if (blurController?.isCapturing == true) return
     super.draw(canvas)
   }
 
