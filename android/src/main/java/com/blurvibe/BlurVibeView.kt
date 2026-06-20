@@ -11,6 +11,15 @@ import android.view.ViewOutlineProvider
 import androidx.core.graphics.toColorInt
 import com.facebook.react.views.view.ReactViewGroup
 
+/**
+ * BlurVibeView — Android API 21–30 backdrop blur.
+ *
+ * The draw() override is the critical piece:
+ *   if (canvas is BlurVibeCanvas) return
+ * This skips drawing ourselves when LegacyBlurController is capturing the
+ * background content. BlurVibeCanvas is a typed marker — no boolean flag,
+ * no race condition with Reanimated. Identical to Dimezis BlurView pattern.
+ */
 class BlurVibeView(context: Context) : ReactViewGroup(context) {
 
   private var blurController: LegacyBlurController? = null
@@ -21,7 +30,6 @@ class BlurVibeView(context: Context) : ReactViewGroup(context) {
   init {
     setWillNotDraw(false)
     outlineProvider = ViewOutlineProvider.BACKGROUND
-    clipToOutline   = true
   }
 
   // ── Lifecycle ──────────────────────────────────────────────────────────────
@@ -43,7 +51,7 @@ class BlurVibeView(context: Context) : ReactViewGroup(context) {
 
   override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
     super.onSizeChanged(w, h, oldw, oldh)
-    blurController?.onSizeChanged()
+    blurController?.onSizeChanged(w, h)
   }
 
   override fun onWindowFocusChanged(hasWindowFocus: Boolean) {
@@ -51,19 +59,23 @@ class BlurVibeView(context: Context) : ReactViewGroup(context) {
     if (hasWindowFocus) blurController?.reAttach()
   }
 
-  // ── draw() — suppress self during root capture ────────────────────────────
+  // ── KEY: skip self when being captured (BlurVibeCanvas pattern) ───────────
 
   override fun draw(canvas: Canvas) {
-    if (blurController?.isCapturing == true) return
+    // BlurVibeCanvas is our background capture canvas.
+    // Returning here makes us invisible to root.draw() during capture,
+    // so we capture ONLY the content behind us — not our own blur output.
+    // Real screen draws always use the hardware display canvas, never BlurVibeCanvas.
+    if (canvas is BlurVibeCanvas) return
     super.draw(canvas)
   }
 
   // ── onDraw ────────────────────────────────────────────────────────────────
 
   override fun onDraw(canvas: Canvas) {
-    // Draw the blurred background first
     blurController?.draw(canvas, width.toFloat(), height.toFloat())
-    // Let ReactViewGroup draw borders/radius/background on top natively
+    // Redraw ReactViewBackgroundDrawable on top so borders/radius show above blur
+    background?.draw(canvas)
     super.onDraw(canvas)
   }
 
@@ -80,14 +92,13 @@ class BlurVibeView(context: Context) : ReactViewGroup(context) {
     invalidate()
   }
 
-  fun setBlurRadius(factor: Int) {
-    // Exposed as a downsample override for power users — not used internally
-  }
+  fun setBlurRadius(@Suppress("UNUSED_PARAMETER") factor: Int) {}
 
   fun applyBorderRadius(radiusDp: Float) {
     cornerRadiusPx = TypedValue.applyDimension(
       TypedValue.COMPLEX_UNIT_DIP, radiusDp, context.resources.displayMetrics
     )
+    clipToOutline = cornerRadiusPx > 0f
     invalidate()
   }
 
@@ -102,17 +113,13 @@ class BlurVibeView(context: Context) : ReactViewGroup(context) {
     blurController?.autoUpdate = autoUpdate
   }
 
-  // ── Layout passthrough ─────────────────────────────────────────────────────
-
   override fun onLayout(changed: Boolean, left: Int, top: Int, right: Int, bottom: Int) {}
 
   // ── Helpers ────────────────────────────────────────────────────────────────
 
   private fun mapBlurAmount(amount: Float): Float {
-    // Linear 0→1, 100→25 (RenderScript max kernel is 25)
-    // With 3 blur rounds this gives equivalent spread to Api31's 120px single-pass
     val t = amount.coerceIn(0f, 100f) / 100f
-    return (1f + t * 24f)  // 1–25 linear, rounds=3 gives wide spread
+    return 2f + t * 22f
   }
 
   private fun findBlurRoot(): ViewGroup? {
