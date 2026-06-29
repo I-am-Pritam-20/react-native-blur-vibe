@@ -76,7 +76,7 @@ class BlurVibeViewApi31(context: Context) : ReactViewGroup(context) {
   private var autoUpdate  = true
   private var lastCaptureNs = 0L
 
-  // ── PreDraw listener — fires BEFORE RenderThread ─────────────
+  // ── PreDraw listener — fires BEFORE RenderThread (guaranteed) ─────────────
 
   private val preDrawListener = ViewTreeObserver.OnPreDrawListener {
     if (blurEnabled && autoUpdate && initialized) {
@@ -139,7 +139,7 @@ class BlurVibeViewApi31(context: Context) : ReactViewGroup(context) {
     val w = measuredWidth;  if (w <= 0) return
     val h = measuredHeight; if (h <= 0) return
 
-    // Round to stride alignment (Samsung OEM requirement)
+    // Round to stride alignment (Samsung OEM requirement — SizeScaler)
     val scaledW = roundToStride((w / SCALE_FACTOR).toInt().coerceAtLeast(1))
     val roundScale = w.toFloat() / scaledW
     val scaledH = (h / roundScale).toInt().coerceAtLeast(1)
@@ -158,13 +158,15 @@ class BlurVibeViewApi31(context: Context) : ReactViewGroup(context) {
     return v - (v % ROUNDING_VALUE) + ROUNDING_VALUE
   }
 
-  // ── Capture  ───────
+  // ── Capture ───────
 
   private fun updateCapture() {
     val root   = blurRoot       ?: return
     val bitmap = capturedBitmap ?: return
     val canvas = captureCanvas  ?: return
     if (bitmap.isRecycled) return
+
+    //setupInternalCanvasMatrix()
     root.getLocationOnScreen(rootLocation)
     getLocationOnScreen(blurViewLocation)
 
@@ -181,6 +183,7 @@ class BlurVibeViewApi31(context: Context) : ReactViewGroup(context) {
     canvas.save()
     canvas.translate(scaledLeft, scaledTop)
     canvas.scale(1f / scaleFactorW, 1f / scaleFactorH)
+
     try {
       root.draw(canvas)
     } catch (e: Exception) {
@@ -228,6 +231,9 @@ class BlurVibeViewApi31(context: Context) : ReactViewGroup(context) {
     val nodeCanvas = blurNode.beginRecording()
     nodeCanvas.drawBitmap(bmp, 0f, 0f, bitmapPaint)
     blurNode.endRecording()
+
+    // Apply RenderEffect directly — NOT pre-multiplied by SCALE_FACTOR.
+    // The canvas.scale() below is the ONLY upscale step.
     blurNode.setRenderEffect(
       RenderEffect.createBlurEffect(localRadius, localRadius, Shader.TileMode.CLAMP)
     )
@@ -240,6 +246,7 @@ class BlurVibeViewApi31(context: Context) : ReactViewGroup(context) {
     canvas.save()
     val scaleW = w / bmp.width
     val scaleH = h / bmp.height
+    // Clip to BlurView bounds
     canvas.clipRect(0f, 0f, w, h)
     canvas.scale(scaleW, scaleH)
     canvas.drawRenderNode(blurNode)
@@ -266,6 +273,9 @@ class BlurVibeViewApi31(context: Context) : ReactViewGroup(context) {
       noisePaint.shader = BitmapShader(noise, Shader.TileMode.REPEAT, Shader.TileMode.REPEAT)
       canvas.drawRect(0f, 0f, w, h, noisePaint)
     }
+
+    // Redraw ReactViewBackgroundDrawable ON TOP of blur
+    // Borders/borderRadius/borderColor appear above the blur layer
     background?.draw(canvas)
   }
 
@@ -403,6 +413,13 @@ class BlurVibeViewApi31(context: Context) : ReactViewGroup(context) {
   // ── Helpers ────────────────────────────────────────────────────────────────
 
   private fun localBlurRadius(amount: Float): Float {
+    // "Felt" radius — the desired blur strength expressed in full-resolution-
+    // equivalent pixels, range 1–100. This curve MUST stay numerically
+    // identical to LegacyBlurController.mapBlurAmount()'s felt curve, and
+    // both divide by the SAME downsample factor (6), so that the same
+    // blurAmount value looks visually identical in density on both
+    // API < 31 and API 31+.
+    //
     // blurAmount=10  → felt≈10.9 → local≈1.8   (backdrop-blur-sm)
     // blurAmount=50  → felt≈50.5 → local≈8.4   (backdrop-blur-xl)
     // blurAmount=100 → felt=100  → local≈16.7  (maximum)
@@ -435,9 +452,9 @@ class BlurVibeViewApi31(context: Context) : ReactViewGroup(context) {
   override fun onLayout(changed: Boolean, l: Int, t: Int, r: Int, b: Int) {}
 
   companion object {
-    private const val SCALE_FACTOR   = 6f   // Default scaleFactor
+    private const val SCALE_FACTOR   = 6f   // default scaleFactor
     private const val ROUNDING_VALUE = 64   // stride alignment (Samsung)
-    private const val FRAME_INTERVAL_NS = 33_333_333L  // ~30fps cap
+    private const val FRAME_INTERVAL_NS = 22_222_222L  // ~45fps cap
     const val PROGRESSIVE_NONE          = 0
     const val PROGRESSIVE_TOP_TO_BOTTOM = 1
     const val PROGRESSIVE_BOTTOM_TO_TOP = 2

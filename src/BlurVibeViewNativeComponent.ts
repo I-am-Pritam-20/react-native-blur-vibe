@@ -2,7 +2,7 @@
 import codegenNativeComponent from 'react-native/Libraries/Utilities/codegenNativeComponent';
 import type { HostComponent, ViewProps } from 'react-native';
 // @ts-ignore
-import type { WithDefault, Float, Int32} from 'react-native/Libraries/Types/CodegenTypes';
+import type { WithDefault, Float, Int32 } from 'react-native/Libraries/Types/CodegenTypes';
 
 interface NativeProps extends ViewProps {
   blurAmount?: WithDefault<Float, 10>;
@@ -18,6 +18,22 @@ interface NativeProps extends ViewProps {
   noiseFactor?: WithDefault<Float, 0.08>;
 }
 
-export default codegenNativeComponent<NativeProps>(
-  'BlurVibeView'
-) as HostComponent<NativeProps>;
+const COMPONENT_NAME = 'BlurVibeView';
+
+const globalRef = globalThis as unknown as {
+  __reactNativeBlurVibeComponents?: Record<string, unknown>;
+};
+
+if (!globalRef.__reactNativeBlurVibeComponents) {
+  globalRef.__reactNativeBlurVibeComponents = {};
+}
+
+const cache = globalRef.__reactNativeBlurVibeComponents;
+
+const NativeBlurVibeView: HostComponent<NativeProps> =
+  (cache[COMPONENT_NAME] as HostComponent<NativeProps> | undefined) ??
+  (cache[COMPONENT_NAME] = codegenNativeComponent<NativeProps>(
+    COMPONENT_NAME
+  ) as HostComponent<NativeProps>);
+
+export default NativeBlurVibeView;
