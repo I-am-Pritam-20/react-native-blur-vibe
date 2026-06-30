@@ -1,9 +1,10 @@
 {
   "name": "react-native-blur-vibe",
-  "version": "0.1.20",
+  "version": "0.2.0",
   "description": "React Native package implementing Blur View in iOS and Android",
   "main": "./lib/commonjs/index.js",
   "module": "./lib/module/index.js",
+  "react-native": "./src/index.ts",
   "types": "./lib/typescript/commonjs/src/index.d.ts",
   "exports": {
     ".": {
