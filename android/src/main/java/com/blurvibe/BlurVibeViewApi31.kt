@@ -10,17 +10,16 @@ import android.graphics.Paint
 import android.graphics.PorterDuff
 import android.graphics.PorterDuffXfermode
 import android.graphics.RadialGradient
+import android.graphics.Rect
 import android.graphics.RectF
 import android.graphics.RenderEffect
 import android.graphics.RenderNode
 import android.graphics.Shader
 import android.os.Build
-import android.util.Log
 import android.util.TypedValue
 import android.view.View
 import android.view.ViewGroup
 import android.view.ViewOutlineProvider
-import android.view.ViewTreeObserver
 import androidx.annotation.RequiresApi
 import androidx.core.graphics.toColorInt
 import com.facebook.react.views.view.ReactViewGroup
@@ -29,65 +28,63 @@ import kotlin.random.Random
 
 /**
  * BlurVibeViewApi31 — Backdrop blur for Android API 31+
- *
- * ─── Style props (borderRadius, borderWidth, borderColor) ───────────────────
- *   outlineProvider = BACKGROUND: ReactViewBackgroundDrawable.getOutline() handles
- *   all RN borderRadius variants. clipToOutline only enabled when radius > 0.
- *   background?.draw(canvas) at END of onDraw() redraws border ON TOP of blur.
+ * ─── Shared capture (fixes multi-BlurView breakage)
+ * ─── Self-exclusion for overlapping/stacked BlurViews
+ * ─── Update trigger
+ * ─── RenderEffect thread safety (per-frame RenderNode pattern)
+ * ─── Style props (borderRadius, borderWidth, borderColor)
  */
 @RequiresApi(Build.VERSION_CODES.S)
 class BlurVibeViewApi31(context: Context) : ReactViewGroup(context) {
 
-  // ── Blur params ────────────────────────────────────────────────────────────
+  // ── Blur params ───
 
   private var blurAmount     = 10f
   private var overlayColor   = Color.TRANSPARENT
   private var cornerRadiusPx = 0f
 
-  // ── Progressive blur ──────────────────────────────────────────────────────
+  // ── Progressive blur ───
 
   private var progressiveDirection      = PROGRESSIVE_NONE
   private var progressiveStartIntensity = 1f
   private var progressiveEndIntensity   = 0f
 
-  // ── Noise ─────────────────────────────────────────────────────────────────
+  // ── Noise ───
 
   private var noiseFactor = 0.08f
-  private var noiseBitmap: Bitmap? = null
   private val noisePaint  = Paint()
 
-  // ── Capture bitmap ────────────────────────────────────────────────────────
+  // ── Own crop destination bitmap ───
 
   private var capturedBitmap: Bitmap? = null
-  private var captureCanvas: BlurVibeCanvas? = null
+  private var cropCanvas: Canvas? = null
   private var initialized = false
 
   private val bitmapPaint = Paint(Paint.FILTER_BITMAP_FLAG or Paint.ANTI_ALIAS_FLAG)
+  private val cropPaint   = Paint(Paint.FILTER_BITMAP_FLAG)
 
-  // ── Root ──────────────────────────────────────────────────────────────────
+  // ── Reused per-frame objects (avoid GC pressure from allocating every frame) ─
+
+  private val cropSrcRect = Rect()
+  private val cropDstRect = RectF()
+  private val drawDstRect = RectF()
+
+  // ── Cached RenderEffect ───
+
+  private var cachedBlurEffect: RenderEffect? = null
+  private var cachedRadius: Float = -1f
+
+  // ── Root / coordinator ─────────────────────────────────────────────────────
 
   private var blurRoot: ViewGroup? = null
-  private val rootLocation    = IntArray(2)
+  private var coordinator: BlurCaptureCoordinator? = null
+  private val rootLocation     = IntArray(2)
   private val blurViewLocation = IntArray(2)
 
   // ── State ─────────────────────────────────────────────────────────────────
 
   private var blurEnabled = true
   private var autoUpdate  = true
-  private var lastCaptureNs = 0L
-
-  // ── PreDraw listener — fires BEFORE RenderThread (guaranteed) ─────────────
-
-  private val preDrawListener = ViewTreeObserver.OnPreDrawListener {
-    if (blurEnabled && autoUpdate && initialized) {
-      val now = System.nanoTime()
-      if (now - lastCaptureNs >= FRAME_INTERVAL_NS) {
-        lastCaptureNs = now
-        updateCapture()
-      }
-    }
-    true
-  }
 
   // ── Paint ─────────────────────────────────────────────────────────────────
 
@@ -107,18 +104,22 @@ class BlurVibeViewApi31(context: Context) : ReactViewGroup(context) {
 
   override fun onAttachedToWindow() {
     super.onAttachedToWindow()
-    blurRoot = findBlurRoot()
-    generateNoiseBitmap()
+    val root = findBlurRoot() ?: return
+    blurRoot = root
+    coordinator = BlurCaptureCoordinator.forRoot(root)
+    acquireSharedNoiseBitmap()
     if (measuredWidth > 0 && measuredHeight > 0) initBlur()
+    coordinator?.register(this)
   }
 
   override fun onDetachedFromWindow() {
-    safeRemovePreDrawListener()
+    coordinator?.unregister(this)
+    coordinator = null
     initialized = false
     blurRoot    = null
     capturedBitmap?.recycle(); capturedBitmap = null
-    captureCanvas = null
-    noiseBitmap?.recycle(); noiseBitmap = null
+    cropCanvas = null
+    releaseSharedNoiseBitmap()
     super.onDetachedFromWindow()
   }
 
@@ -129,28 +130,24 @@ class BlurVibeViewApi31(context: Context) : ReactViewGroup(context) {
 
   override fun onWindowFocusChanged(hasWindowFocus: Boolean) {
     super.onWindowFocusChanged(hasWindowFocus)
-    if (hasWindowFocus && blurEnabled && autoUpdate) safeAddPreDrawListener()
+    if (hasWindowFocus) coordinator?.reAttachIfNeeded()
   }
 
-  // ── Init bitmaps ──────────────────────────────────────────────────────────
+  // ── Init own crop-destination bitmap ──────────────────────────────────────
 
   private fun initBlur() {
-    safeRemovePreDrawListener()
     val w = measuredWidth;  if (w <= 0) return
     val h = measuredHeight; if (h <= 0) return
 
-    // Round to stride alignment (Samsung OEM requirement — SizeScaler)
-    val scaledW = roundToStride((w / SCALE_FACTOR).toInt().coerceAtLeast(1))
+    val factor = BlurCaptureCoordinator.DOWNSAMPLE_FACTOR
+    val scaledW = roundToStride((w / factor).toInt().coerceAtLeast(1))
     val roundScale = w.toFloat() / scaledW
     val scaledH = (h / roundScale).toInt().coerceAtLeast(1)
 
     capturedBitmap?.recycle()
     capturedBitmap = Bitmap.createBitmap(scaledW, scaledH, Bitmap.Config.ARGB_8888)
-    captureCanvas  = BlurVibeCanvas(capturedBitmap!!)
+    cropCanvas     = Canvas(capturedBitmap!!)
     initialized    = true
-
-    safeAddPreDrawListener()
-    updateCapture()  // initial capture
   }
 
   private fun roundToStride(v: Int): Int {
@@ -158,58 +155,48 @@ class BlurVibeViewApi31(context: Context) : ReactViewGroup(context) {
     return v - (v % ROUNDING_VALUE) + ROUNDING_VALUE
   }
 
-  // ── Capture ───────
+  // ── Crop (replaces the old per-view root.draw() capture step) ────────────
 
-  private fun updateCapture() {
+  private fun refreshFromSharedCapture() {
     val root   = blurRoot       ?: return
+    val shared = coordinator?.currentBitmap ?: return   // not ready yet — keep prior content
     val bitmap = capturedBitmap ?: return
-    val canvas = captureCanvas  ?: return
+    val canvas = cropCanvas     ?: return
     if (bitmap.isRecycled) return
 
-    //setupInternalCanvasMatrix()
-    root.getLocationOnScreen(rootLocation)
-    getLocationOnScreen(blurViewLocation)
+    getLocationInWindow(blurViewLocation)
+    root.getLocationInWindow(rootLocation)
+    val leftPx = (blurViewLocation[0] - rootLocation[0]).toFloat()
+    val topPx  = (blurViewLocation[1] - rootLocation[1]).toFloat()
 
-    val left = blurViewLocation[0] - rootLocation[0]
-    val top  = blurViewLocation[1] - rootLocation[1]
-
-    val scaleFactorW = width.toFloat()  / bitmap.width.toFloat()
-    val scaleFactorH = height.toFloat() / bitmap.height.toFloat()
-
-    val scaledLeft = -left / scaleFactorW
-    val scaledTop  = -top  / scaleFactorH
+    val factor = BlurCaptureCoordinator.DOWNSAMPLE_FACTOR
+    val srcLeft   = (leftPx / factor).toInt().coerceIn(0, shared.width)
+    val srcTop    = (topPx  / factor).toInt().coerceIn(0, shared.height)
+    val srcRight  = (srcLeft + (width  / factor).toInt()).coerceIn(srcLeft, shared.width)
+    val srcBottom = (srcTop  + (height / factor).toInt()).coerceIn(srcTop, shared.height)
+    if (srcRight <= srcLeft || srcBottom <= srcTop) return  // off-screen / zero-size this frame
 
     bitmap.eraseColor(Color.TRANSPARENT)
-    canvas.save()
-    canvas.translate(scaledLeft, scaledTop)
-    canvas.scale(1f / scaleFactorW, 1f / scaleFactorH)
-
-    try {
-      root.draw(canvas)
-    } catch (e: Exception) {
-      Log.e("BlurVibeViewApi31", "Capture failed, skipping frame", e)
-      canvas.restore()
-      return
-    }
-    canvas.restore()
-
-    // Request redraw with new captured content
-    invalidate()
+    cropSrcRect.set(srcLeft, srcTop, srcRight, srcBottom)
+    cropDstRect.set(0f, 0f, bitmap.width.toFloat(), bitmap.height.toFloat())
+    canvas.drawBitmap(shared, cropSrcRect, cropDstRect, cropPaint)
   }
 
-  // ── draw() — skip self during capture ────────────────────────────────────
-
+  // ── draw() — skip self during the coordinator's shared capture ───
   override fun draw(canvas: Canvas) {
     if (canvas is BlurVibeCanvas) return
     super.draw(canvas)
   }
 
-  // ── onDraw ────────────────────────────────────────────────────────────────
+  // ── onDraw ───
 
   override fun onDraw(canvas: Canvas) {
     if (!blurEnabled || !initialized) return
     val w = width.toFloat();  if (w <= 0f) return
     val h = height.toFloat(); if (h <= 0f) return
+
+    if (autoUpdate) refreshFromSharedCapture()
+
     val bmp = capturedBitmap?.takeIf { !it.isRecycled } ?: return
 
     if (canvas.isHardwareAccelerated) {
@@ -219,7 +206,7 @@ class BlurVibeViewApi31(context: Context) : ReactViewGroup(context) {
     }
   }
 
-  // ── Hardware path (API 31+, normal case) ──────────────────────────────────
+  // ── Hardware path (API 31+, normal case) ──
 
   private fun drawHardwarePath(canvas: Canvas, bmp: Bitmap, w: Float, h: Float) {
     val localRadius = localBlurRadius(blurAmount)
@@ -232,11 +219,14 @@ class BlurVibeViewApi31(context: Context) : ReactViewGroup(context) {
     nodeCanvas.drawBitmap(bmp, 0f, 0f, bitmapPaint)
     blurNode.endRecording()
 
-    // Apply RenderEffect directly — NOT pre-multiplied by SCALE_FACTOR.
-    // The canvas.scale() below is the ONLY upscale step.
-    blurNode.setRenderEffect(
-      RenderEffect.createBlurEffect(localRadius, localRadius, Shader.TileMode.CLAMP)
-    )
+    // Apply RenderEffect — UNSCALED. canvas.scale() below is the ONLY
+    var effect = cachedBlurEffect
+    if (effect == null || cachedRadius != localRadius) {
+      effect = RenderEffect.createBlurEffect(localRadius, localRadius, Shader.TileMode.CLAMP)
+      cachedBlurEffect = effect
+      cachedRadius = localRadius
+    }
+    blurNode.setRenderEffect(effect)
 
     // Progressive mask requires saveLayer
     val saveCount = if (progressiveDirection != PROGRESSIVE_NONE)
@@ -246,7 +236,6 @@ class BlurVibeViewApi31(context: Context) : ReactViewGroup(context) {
     canvas.save()
     val scaleW = w / bmp.width
     val scaleH = h / bmp.height
-    // Clip to BlurView bounds
     canvas.clipRect(0f, 0f, w, h)
     canvas.scale(scaleW, scaleH)
     canvas.drawRenderNode(blurNode)
@@ -267,11 +256,15 @@ class BlurVibeViewApi31(context: Context) : ReactViewGroup(context) {
       canvas.drawRect(0f, 0f, w, h, overlayPaint)
     }
 
-    // Noise grain
-    noiseBitmap?.takeIf { !it.isRecycled && noiseFactor > 0f }?.let { noise ->
-      noisePaint.alpha  = (noiseFactor * 255f).toInt().coerceIn(0, 255)
-      noisePaint.shader = BitmapShader(noise, Shader.TileMode.REPEAT, Shader.TileMode.REPEAT)
-      canvas.drawRect(0f, 0f, w, h, noisePaint)
+    // Noise grain — sharedNoiseShader is a single static Shader instance
+    // (see companion object) reused by every BlurVibeViewApi31 in the app;
+    // only alpha (this view's own noiseFactor) is set per-instance.
+    if (noiseFactor > 0f) {
+      sharedNoiseShader?.let { shader ->
+        noisePaint.alpha  = (noiseFactor * 255f).toInt().coerceIn(0, 255)
+        noisePaint.shader = shader
+        canvas.drawRect(0f, 0f, w, h, noisePaint)
+      }
     }
 
     // Redraw ReactViewBackgroundDrawable ON TOP of blur
@@ -279,13 +272,14 @@ class BlurVibeViewApi31(context: Context) : ReactViewGroup(context) {
     background?.draw(canvas)
   }
 
-  // ── Software fallback (screenshots, software transitions) ─────────────────
+  // ── Software fallback (screenshots, software transitions) ───
 
   private fun drawSoftwarePath(canvas: Canvas, bmp: Bitmap, w: Float, h: Float) {
     canvas.save()
     val saveCount = if (progressiveDirection != PROGRESSIVE_NONE)
       canvas.saveLayer(0f, 0f, w, h, null) else -1
-    canvas.drawBitmap(bmp, null, RectF(0f, 0f, w, h), bitmapPaint)
+    drawDstRect.set(0f, 0f, w, h)
+    canvas.drawBitmap(bmp, null, drawDstRect, bitmapPaint)
     if (progressiveDirection != PROGRESSIVE_NONE && saveCount >= 0) {
       buildProgressiveShader(w, h)?.let { shader ->
         maskPaint.shader = shader
@@ -301,7 +295,7 @@ class BlurVibeViewApi31(context: Context) : ReactViewGroup(context) {
     background?.draw(canvas)
   }
 
-  // ── Progressive shader ────────────────────────────────────────────────────
+  // ── Progressive shader ───
 
   private fun buildProgressiveShader(w: Float, h: Float): Shader? {
     val sc = Color.argb((progressiveStartIntensity.coerceIn(0f,1f)*255).toInt(),0,0,0)
@@ -316,17 +310,32 @@ class BlurVibeViewApi31(context: Context) : ReactViewGroup(context) {
     }
   }
 
-  // ── Noise ─────────────────────────────────────────────────────────────────
+  // ── Shared noise bitmap (resource-usage fix) ───
 
-  private fun generateNoiseBitmap() {
-    if (noiseBitmap?.isRecycled == false) return
-    val size = 64
-    val bmp  = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
-    val rng  = Random(42)
-    for (x in 0 until size) for (y in 0 until size) {
-      val v = rng.nextInt(256); bmp.setPixel(x, y, Color.argb(255, v, v, v))
+  private fun acquireSharedNoiseBitmap() {
+    if (sharedNoiseBitmap == null) {
+      val size = 64
+      val pixels = IntArray(size * size)
+      val rng = Random(42)
+      for (i in pixels.indices) {
+        val v = rng.nextInt(256)
+        pixels[i] = Color.argb(255, v, v, v)
+      }
+      val bmp = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+      bmp.setPixels(pixels, 0, size, 0, 0, size, size)  // batch call — not a setPixel() loop
+      sharedNoiseBitmap = bmp
+      sharedNoiseShader = BitmapShader(bmp, Shader.TileMode.REPEAT, Shader.TileMode.REPEAT)
     }
-    noiseBitmap = bmp
+    noiseRefCount++
+  }
+
+  private fun releaseSharedNoiseBitmap() {
+    noiseRefCount = (noiseRefCount - 1).coerceAtLeast(0)
+    if (noiseRefCount == 0) {
+      sharedNoiseBitmap?.recycle()
+      sharedNoiseBitmap = null
+      sharedNoiseShader = null
+    }
   }
 
   // ── Public setters ─────────────────────────────────────────────────────────
@@ -364,32 +373,11 @@ class BlurVibeViewApi31(context: Context) : ReactViewGroup(context) {
 
   fun applyBlurEnabled(enabled: Boolean) {
     blurEnabled = enabled
-    if (enabled) { safeAddPreDrawListener(); invalidate() }
-    else { safeRemovePreDrawListener(); invalidate() }
+    invalidate()
   }
 
   fun setAutoUpdate(update: Boolean) {
     autoUpdate = update
-    if (update) safeAddPreDrawListener() else safeRemovePreDrawListener()
-  }
-
-  // ── PreDrawListener helpers ────────────────────────────────────────────────
-
-  private fun safeAddPreDrawListener() {
-    val root = blurRoot ?: return
-    val rootVto = root.viewTreeObserver
-    rootVto.removeOnPreDrawListener(preDrawListener)
-    if (rootVto.isAlive) rootVto.addOnPreDrawListener(preDrawListener)
-    if (root.windowId != windowId) {
-      val myVto = viewTreeObserver
-      myVto.removeOnPreDrawListener(preDrawListener)
-      if (myVto.isAlive) myVto.addOnPreDrawListener(preDrawListener)
-    }
-  }
-
-  private fun safeRemovePreDrawListener() {
-    blurRoot?.viewTreeObserver?.removeOnPreDrawListener(preDrawListener)
-    viewTreeObserver.removeOnPreDrawListener(preDrawListener)
   }
 
   // ── Root finder ───────────────────────────────────────────────────────────
@@ -415,16 +403,17 @@ class BlurVibeViewApi31(context: Context) : ReactViewGroup(context) {
   private fun localBlurRadius(amount: Float): Float {
     // "Felt" radius — the desired blur strength expressed in full-resolution-
     // equivalent pixels, range 1–100. This curve MUST stay numerically
-    // identical to LegacyBlurController.mapBlurAmount()'s felt curve, and
-    // both divide by the SAME downsample factor (6), so that the same
-    // blurAmount value looks visually identical in density on both
-    // API < 31 and API 31+.
+    // identical to BlurVibeView.mapBlurAmount()'s felt curve, and both
+    // divide by BlurCaptureCoordinator.DOWNSAMPLE_FACTOR directly (not a
+    // duplicated literal), so blurAmount produces matching visual density
+    // on both API < 31 and API 31+, and a mismatch here can never silently
+    // corrupt crop math either (both views crop from the SAME shared bitmap).
     //
     // blurAmount=10  → felt≈10.9 → local≈1.8   (backdrop-blur-sm)
     // blurAmount=50  → felt≈50.5 → local≈8.4   (backdrop-blur-xl)
     // blurAmount=100 → felt=100  → local≈16.7  (maximum)
     val felt = 1f + (amount.coerceIn(0f, 100f) / 100f) * 99f
-    return (felt / SCALE_FACTOR).coerceIn(0.5f, 40f)
+    return (felt / BlurCaptureCoordinator.DOWNSAMPLE_FACTOR).coerceIn(0.5f, 40f)
   }
 
   private fun parseHexColor(s: String): Int? {
@@ -452,14 +441,19 @@ class BlurVibeViewApi31(context: Context) : ReactViewGroup(context) {
   override fun onLayout(changed: Boolean, l: Int, t: Int, r: Int, b: Int) {}
 
   companion object {
-    private const val SCALE_FACTOR   = 6f   // default scaleFactor
     private const val ROUNDING_VALUE = 64   // stride alignment (Samsung)
-    private const val FRAME_INTERVAL_NS = 22_222_222L  // ~45fps cap
     const val PROGRESSIVE_NONE          = 0
     const val PROGRESSIVE_TOP_TO_BOTTOM = 1
     const val PROGRESSIVE_BOTTOM_TO_TOP = 2
     const val PROGRESSIVE_LEFT_TO_RIGHT = 3
     const val PROGRESSIVE_RIGHT_TO_LEFT = 4
     const val PROGRESSIVE_RADIAL        = 5
+
+    // ── Shared noise bitmap — global, ref-counted, main-thread only ─────────
+    // Fixed seed means every instance would produce identical content anyway
+    // — see acquireSharedNoiseBitmap() above for full rationale.
+    private var sharedNoiseBitmap: Bitmap? = null
+    private var sharedNoiseShader: Shader? = null
+    private var noiseRefCount = 0
   }
 }

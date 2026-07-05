@@ -13,7 +13,6 @@ import com.facebook.react.views.view.ReactViewGroup
 
 /**
  * BlurVibeView — Android API 21–30 backdrop blur.
- *
  */
 class BlurVibeView(context: Context) : ReactViewGroup(context) {
 
@@ -54,10 +53,10 @@ class BlurVibeView(context: Context) : ReactViewGroup(context) {
     if (hasWindowFocus) blurController?.reAttach()
   }
 
-  // ── KEY: skip self when being captured (isCapturing flag) ─────────────────
+  // ── KEY: skip self when being captured (BlurVibeCanvas marker) ────────────
 
   override fun draw(canvas: Canvas) {
-    if (blurController?.isCapturing == true) return
+    if (canvas is BlurVibeCanvas) return
     super.draw(canvas)
   }
 
@@ -109,11 +108,20 @@ class BlurVibeView(context: Context) : ReactViewGroup(context) {
   // ── Helpers ────────────────────────────────────────────────────────────────
 
   private fun mapBlurAmount(amount: Float): Float {
+    // "Felt" radius — desired blur strength in full-resolution-equivalent
+    // pixels, range 1–100. MUST stay numerically identical to
+    // BlurVibeViewApi31.localBlurRadius()'s felt curve, and both divide by
+    // BlurCaptureCoordinator.DOWNSAMPLE_FACTOR (referenced directly, not
+    // duplicated as a literal) so blurAmount produces matching visual
+    // density on both API < 31 and API 31+, and — now that both view
+    // classes crop from the SAME shared bitmap — so a mismatch here can
+    // never silently corrupt crop math either.
+    //
     // blurAmount=10  → felt≈10.9 → local≈1.8   (backdrop-blur-sm)
     // blurAmount=50  → felt≈50.5 → local≈8.4   (backdrop-blur-xl)
     // blurAmount=100 → felt=100  → local≈16.7  (maximum, within RenderScript's 25 cap)
     val felt = 1f + (amount.coerceIn(0f, 100f) / 100f) * 99f
-    return (felt / 6f).coerceIn(1f, 25f)   // RenderScript max radius is 25
+    return (felt / BlurCaptureCoordinator.DOWNSAMPLE_FACTOR).coerceIn(1f, 25f)
   }
 
   private fun findBlurRoot(): ViewGroup? {

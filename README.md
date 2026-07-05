@@ -34,10 +34,11 @@ A modern, actively maintained blur view for React Native. Works on **iOS** and *
 | Full RN style props | ✅ | ✅ | ✅ |
 | `blurType` | ✅ | ❌ | ❌ |
 | `enabled` / `autoUpdate` | ✅ | ✅ | ✅ |
-| `blurRadius` downsample | ❌ | ❌ | ✅ |
 | Split-screen / PiP / Freeform | ✅ | ✅ | ✅ |
 | Old Architecture (Paper) | ✅ | ✅ | ✅ |
 | New Architecture (Fabric) | ✅ | ✅ | ✅ |
+| Many `BlurView`s per screen (FlatList, stacked cards) | ✅ (native) | ✅ shared capture | ✅ shared capture |
+| Overlapping / stacked `BlurView`s | ✅ (native) | ✅ | ✅ |
 
 ---
 
@@ -104,6 +105,8 @@ Blur intensity from `0` (no blur) to `100` (maximum blur).
 | `50` | `backdrop-blur-xl` (24px) | Heavy glass |
 | `75` | `backdrop-blur-2xl` | Dense blur |
 | `100` | `backdrop-blur-3xl` | Maximum — nearly opaque frosted panel |
+
+Each `BlurView` on screen can use a different `blurAmount`, independent of any others.
 
 ```tsx
 <BlurView blurAmount={30} style={StyleSheet.absoluteFill} />
@@ -185,11 +188,11 @@ Solid color shown when blur is unavailable (iOS Reduce Transparency enabled, or 
 
 | | |
 |---|---|
-| Type | `number` (integer 1–8) |
+| Type | `number` |
 | Default | `4` |
-| Platform | **Android API < 31 only** |
+| Platform | Accepted on all platforms, currently a **no-op** |
 
-RenderScript capture downsample factor. Higher = faster but softer. Ignored on API 31+ and iOS.
+> **Note:** This prop is kept for backward compatibility but no longer has an effect. Earlier versions used it as a per-view capture-downsample factor; since capture is now shared across every `BlurView` on a screen (see [How blur capture works](#how-blur-capture-works-on-android)), the downsample level is fixed internally to a value tuned for quality and performance, and is no longer configurable per view. Use `blurAmount` to control blur strength.
 
 ---
 
@@ -201,7 +204,7 @@ RenderScript capture downsample factor. Higher = faster but softer. Ignored on A
 | Default | `true` |
 | Platform | iOS + Android |
 
-Enable or disable the blur effect. When `false`, the view renders transparently. Useful for toggling blur based on scroll position or performance mode.
+Enable or disable the blur effect. When `false`, the view renders transparently. Useful for toggling blur based on scroll position or performance mode. Disabling one `BlurView` has no effect on any others on the same screen — each is independent.
 
 ```tsx
 <BlurView blurAmount={30} enabled={isScrolling ? false : true} style={StyleSheet.absoluteFill} />
@@ -217,7 +220,7 @@ Enable or disable the blur effect. When `false`, the view renders transparently.
 | Default | `true` |
 | Platform | iOS + Android |
 
-When `false`, blur is captured once at mount and never updated. Use for completely static backgrounds (e.g. blurred album art) to eliminate all per-frame cost on Android API < 31.
+When `false`, this `BlurView` stops refreshing and keeps showing whatever it last captured — useful for a completely static background (e.g. blurred album art) that never needs to change. Other `BlurView`s on the same screen keep updating normally regardless of this setting.
 
 ```tsx
 <BlurView blurAmount={40} autoUpdate={false} style={StyleSheet.absoluteFill} />
@@ -297,6 +300,8 @@ Noise grain overlay for tactile frosted-glass texture.
 | `0.15` | Noticeable grain |
 | `0.30` | Heavy grain |
 
+Each `BlurView` controls its own grain strength independently, even though the underlying grain texture is shared internally for efficiency.
+
 ---
 
 ## Style props
@@ -332,7 +337,7 @@ const styles = StyleSheet.create({
 <BlurView blurAmount={25} overlayColor="#00000040" style={styles.blur} />
 ```
 
-> **Note:** Add `overflow: 'hidden'` when using `borderRadius` on iOS to ensure child content is clipped correctly. On Android this is handled automatically via `clipToOutline`.
+> **Note:** Add `overflow: 'hidden'` when using `borderRadius` on iOS to ensure child content is clipped correctly. On Android this is handled automatically.
 
 ### Rounded frosted card
 
@@ -498,6 +503,8 @@ const [isScrolling, setIsScrolling] = React.useState(false);
 
 ### Inside FlatList / FlashList
 
+Every card's `BlurView` shares one capture pass per frame — adding more blurred cards to the list does not multiply the cost.
+
 ```tsx
 <FlatList
   data={items}
@@ -512,6 +519,53 @@ const [isScrolling, setIsScrolling] = React.useState(false);
     </ImageBackground>
   )}
 />
+```
+
+### Multiple blur surfaces on one screen
+
+A blurred tab bar, several blurred cards, and a blurred header can all coexist on the same screen — each with its own independent settings — without the app slowing down as more are added.
+
+```tsx
+<View style={{ flex: 1 }}>
+  <ScrollView>
+    {items.map((item) => (
+      <View key={item.id} style={styles.row}>
+        <ImageBackground source={{ uri: item.image }} style={styles.rowImage} />
+        <BlurView
+          blurAmount={20}
+          overlayColor="#00000030"
+          style={StyleSheet.absoluteFill}
+        />
+      </View>
+    ))}
+  </ScrollView>
+
+  {/* Blurred tab bar — a separate BlurView, fully independent settings */}
+  <BlurView
+    blurAmount={50}
+    overlayColor="#0000004D"
+    style={styles.tabBar}
+  />
+</View>
+```
+
+### Overlapping / stacked blur surfaces
+
+A blurred card can sit inside a blurred modal — each correctly blurs only what's behind *it*, not the other blur layer.
+
+```tsx
+<Modal visible={visible} transparent>
+  <BlurView blurAmount={30} overlayColor="#00000060" style={StyleSheet.absoluteFill} />
+
+  <View style={styles.sheet}>
+    <BlurView
+      blurAmount={20}
+      overlayColor="#FFFFFF15"
+      style={[StyleSheet.absoluteFill, { borderRadius: 20 }]}
+    />
+    <Text style={styles.sheetTitle}>Details</Text>
+  </View>
+</Modal>
 ```
 
 ---

@@ -4,18 +4,24 @@ import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
+import android.graphics.Rect
 import android.graphics.RectF
 import android.renderscript.Allocation
 import android.renderscript.Element
 import android.renderscript.RenderScript
 import android.renderscript.ScriptIntrinsicBlur
-import android.view.Choreographer
 import android.view.ViewGroup
-import android.view.ViewTreeObserver
 
 /**
- * LegacyBlurController — zero-dependency backdrop blur for Android API 21–30.
+ * LegacyBlurController — per-view crop + blur for Android API 21–30.
  *
+ * ─── Shared capture 
+ *
+ * ─── Self-exclusion
+ *
+ * ─── Update trigger 
+ *
+ * ─── Shared RenderScript context (resource-usage fix)
  */
 @Suppress("DEPRECATION")
 internal class LegacyBlurController(
@@ -24,106 +30,93 @@ internal class LegacyBlurController(
 ) {
 
   companion object {
-    private const val DOWNSAMPLE_FACTOR = 6f   // matches BlurVibeViewApi31's SCALE_FACTOR
-    private const val ROUNDING_VALUE    = 64   // stride alignment (Samsung OEM requirement)
-    private const val BLUR_RADIUS       = 25f  // max RenderScript kernel
-    private const val BLUR_ROUNDS       = 1    // single pass — small bitmap already looks smooth
+    private const val ROUNDING_VALUE = 64   // stride alignment (Samsung OEM requirement)
+    private const val BLUR_RADIUS    = 25f  // max RenderScript kernel
+    private const val BLUR_ROUNDS    = 1    // single pass — small bitmap already looks smooth
 
-    // ~45fps cap. Raised from the original 30fps now that each capture is
-    // cheap (downsampled-only) — still far below uncapped 90/120Hz, but
-    // fresh enough that fast underlying animations look smoother.
-    private const val FRAME_INTERVAL_NS = 22_222_222L
+    // ── Shared RenderScript — global, ref-counted, main-thread only ─────────
+    private var sharedRs: RenderScript? = null
+    private var sharedBlurScript: ScriptIntrinsicBlur? = null
+    private var activeInstanceCount = 0
+
+    private fun acquireRenderScript(context: android.content.Context): Pair<RenderScript?, ScriptIntrinsicBlur?> {
+      if (sharedRs == null) {
+        try {
+          val rs = RenderScript.create(context.applicationContext)
+          sharedRs = rs
+          sharedBlurScript = ScriptIntrinsicBlur.create(rs, Element.U8_4(rs))
+        } catch (_: Exception) {}
+      }
+      activeInstanceCount++
+      return sharedRs to sharedBlurScript
+    }
+
+    private fun releaseRenderScript() {
+      activeInstanceCount = (activeInstanceCount - 1).coerceAtLeast(0)
+      if (activeInstanceCount == 0) {
+        sharedBlurScript?.destroy()
+        sharedRs?.destroy()
+        sharedBlurScript = null
+        sharedRs = null
+      }
+    }
   }
 
-  // ── Single downsampled bitmap + canvas ────────────────────────────────────
-  //
-  // Replaces the old captureBitmap (full-res) + scaledBitmap (downsampled)
-  // pair. There is only ONE bitmap now, allocated directly at the downsampled
-  // size — root.draw() writes into it directly via a scaled canvas.
+  private val coordinator = BlurCaptureCoordinator.forRoot(rootView)
+
+  // ── Own crop destination bitmap 
 
   private var capturedBitmap: Bitmap? = null
-  private var captureCanvas:  Canvas? = null
+  private var cropCanvas: Canvas? = null
   private var initialized = false
 
+  private val cropPaint = Paint(Paint.FILTER_BITMAP_FLAG)
   private val drawPaint = Paint(Paint.FILTER_BITMAP_FLAG)
 
-  // ── RenderScript pool ──────────────────────────────────────────────────────
+  // ── Reused per-frame objects (avoid GC pressure from allocating every frame) ─
 
-  private var rs:          RenderScript?        = null
-  private var blurScript:  ScriptIntrinsicBlur? = null
+  private val myLoc = IntArray(2)
+  private val rootLoc = IntArray(2)
+  private val cropSrcRect = Rect()
+  private val cropDstRect = RectF()
+  private val drawDstRect = RectF()
+
+  // ── RenderScript (shared, acquired in init) ────────────────────────────────
+
+  private var rs:         RenderScript?        = null
+  private var blurScript: ScriptIntrinsicBlur? = null
   private var inputAlloc:  Allocation?          = null
   private var outputAlloc: Allocation?          = null
 
   // ── State ──────────────────────────────────────────────────────────────────
 
-  var overlayColor: Int  = Color.TRANSPARENT
-  var blurRadius:   Float = BLUR_RADIUS
+  var overlayColor: Int    = Color.TRANSPARENT
+  var blurRadius:   Float  = BLUR_RADIUS
   var enabled:      Boolean = true
-    set(value) { field = value; if (!value) invalidatePool() }
   var autoUpdate:   Boolean = true
-    set(value) {
-      field = value
-      if (value) safeAddPreDrawListener()
-      else rootView.viewTreeObserver.removeOnPreDrawListener(preDrawListener)
-    }
-
-  // isCapturing: set true before root.draw() so BlurVibeView.draw() is a no-op
-  // preventing stale self-capture. Accessed by BlurVibeView.draw().
-  var isCapturing = false
-    private set
-
-  private var frameScheduled = false
-  private var lastCaptureNs  = 0L
-
-  // ── Choreographer gate ────────────────────────────────────────────────────
-
-  private val frameCallback = Choreographer.FrameCallback {
-    frameScheduled = false
-    if (enabled) {
-      val now = System.nanoTime()
-      if (now - lastCaptureNs >= FRAME_INTERVAL_NS) {
-        lastCaptureNs = now
-        captureAndBlur()
-      }
-    }
-  }
-
-  private val preDrawListener = ViewTreeObserver.OnPreDrawListener {
-    if (!frameScheduled && enabled && autoUpdate) {
-      frameScheduled = true
-      Choreographer.getInstance().postFrameCallback(frameCallback)
-    }
-    true
-  }
 
   // ── Init ───────────────────────────────────────────────────────────────────
 
   init {
-    initRenderScript()
+    val (r, s) = acquireRenderScript(view.context)
+    rs = r
+    blurScript = s
     val w = view.measuredWidth
     val h = view.measuredHeight
     if (w > 0 && h > 0) initBitmaps(w, h)
-    safeAddPreDrawListener()
+    coordinator.register(view)
   }
-
-  private fun initRenderScript() {
-    try {
-      rs = RenderScript.create(view.context)
-      blurScript = ScriptIntrinsicBlur.create(rs, Element.U8_4(rs))
-    } catch (_: Exception) {}
-  }
-
-  // ── Bitmap init (downsampled size, stride-aligned) ────────────────────────
 
   private fun initBitmaps(w: Int, h: Int) {
-    val scaledW = roundToStride((w / DOWNSAMPLE_FACTOR).toInt().coerceAtLeast(1))
+    val factor = BlurCaptureCoordinator.DOWNSAMPLE_FACTOR
+    val scaledW = roundToStride((w / factor).toInt().coerceAtLeast(1))
     val roundingScale = w.toFloat() / scaledW
     val scaledH = (h / roundingScale).toInt().coerceAtLeast(1)
 
     capturedBitmap?.recycle()
     capturedBitmap = Bitmap.createBitmap(scaledW, scaledH, Bitmap.Config.ARGB_8888)
-    captureCanvas  = Canvas(capturedBitmap!!)
-    initialized    = true
+    cropCanvas = Canvas(capturedBitmap!!)
+    initialized = true
   }
 
   private fun roundToStride(v: Int): Int {
@@ -131,56 +124,40 @@ internal class LegacyBlurController(
     return v - (v % ROUNDING_VALUE) + ROUNDING_VALUE
   }
 
-  // ── Capture + blur (direct-downsampled, the perf fix) ─────────────────────
+  // ── Crop + blur (replaces the old per-view capture step) ──────────────────
 
-  private fun captureAndBlur() {
+  private fun refreshFromSharedCapture() {
     if (!initialized) {
       val w = view.measuredWidth
       val h = view.measuredHeight
       if (w > 0 && h > 0) initBitmaps(w, h) else return
     }
+    val shared = coordinator.currentBitmap ?: return   // not ready yet — keep prior content
     val bitmap = capturedBitmap ?: return
-    val canvas = captureCanvas  ?: return
+    val canvas = cropCanvas ?: return
     if (bitmap.isRecycled) return
 
     val vw = view.width;  if (vw <= 0) return
     val vh = view.height; if (vh <= 0) return
 
-    // getLocationInWindow — correct for split-screen/freeform/PiP (window-
-    // relative, unlike getLocationOnScreen which breaks when the window
-    // doesn't start at screen origin).
-    val myLoc   = IntArray(2); view.getLocationInWindow(myLoc)
-    val rootLoc = IntArray(2); rootView.getLocationInWindow(rootLoc)
-    val left = myLoc[0] - rootLoc[0]
-    val top  = myLoc[1] - rootLoc[1]
+    view.getLocationInWindow(myLoc)
+    rootView.getLocationInWindow(rootLoc)
+    val leftPx = (myLoc[0] - rootLoc[0]).toFloat()
+    val topPx  = (myLoc[1] - rootLoc[1]).toFloat()
 
-    // Scale factors: how much smaller the bitmap is than the actual view.
-    val scaleFactorW = vw.toFloat() / bitmap.width.toFloat()
-    val scaleFactorH = vh.toFloat() / bitmap.height.toFloat()
+    val factor = BlurCaptureCoordinator.DOWNSAMPLE_FACTOR
+    val srcLeft   = (leftPx / factor).toInt().coerceIn(0, shared.width)
+    val srcTop    = (topPx  / factor).toInt().coerceIn(0, shared.height)
+    val srcRight  = (srcLeft + (vw / factor).toInt()).coerceIn(srcLeft, shared.width)
+    val srcBottom = (srcTop  + (vh / factor).toInt()).coerceIn(srcTop, shared.height)
+    if (srcRight <= srcLeft || srcBottom <= srcTop) return  // off-screen / zero-size this frame
 
     bitmap.eraseColor(Color.TRANSPARENT)
-    canvas.save()
-    // Scale DOWN before drawing — root.draw() below produces low-res output
-    // directly, instead of drawing full-res and downsampling afterward.
-    canvas.translate(-left / scaleFactorW, -top / scaleFactorH)
-    canvas.scale(1f / scaleFactorW, 1f / scaleFactorH)
-
-    // isCapturing = true → BlurVibeView.draw() is a no-op → root.draw()
-    // skips us → capture contains ONLY content behind us
-    isCapturing = true
-    try {
-      rootView.draw(canvas)
-    } catch (_: Exception) {
-      isCapturing = false
-      canvas.restore()
-      return
-    }
-    isCapturing = false
-    canvas.restore()
+    cropSrcRect.set(srcLeft, srcTop, srcRight, srcBottom)
+    cropDstRect.set(0f, 0f, bitmap.width.toFloat(), bitmap.height.toFloat())
+    canvas.drawBitmap(shared, cropSrcRect, cropDstRect, cropPaint)
 
     repeat(BLUR_ROUNDS) { blurBitmap(bitmap) }
-
-    view.invalidate()
   }
 
   private fun blurBitmap(bitmap: Bitmap) {
@@ -204,11 +181,14 @@ internal class LegacyBlurController(
     Canvas(bitmap).drawBitmap(bitmap, 0f, 0f, paint)
   }
 
-  // ── Draw ─────────────────────────────────────────────────────────────────
+  // ── Draw — called from BlurVibeView.onDraw() ──────────────────────────────
 
   fun draw(canvas: Canvas, viewWidth: Float, viewHeight: Float) {
+    if (!enabled) return
+    if (autoUpdate) refreshFromSharedCapture()
     capturedBitmap?.takeIf { !it.isRecycled }?.let { bmp ->
-      canvas.drawBitmap(bmp, null, RectF(0f, 0f, viewWidth, viewHeight), drawPaint)
+      drawDstRect.set(0f, 0f, viewWidth, viewHeight)
+      canvas.drawBitmap(bmp, null, drawDstRect, drawPaint)
     }
     if (Color.alpha(overlayColor) > 0) canvas.drawColor(overlayColor)
   }
@@ -216,13 +196,7 @@ internal class LegacyBlurController(
   // ── Multi-window ──────────────────────────────────────────────────────────
 
   fun reAttach() {
-    if (enabled && autoUpdate) safeAddPreDrawListener()
-  }
-
-  private fun safeAddPreDrawListener() {
-    val vto = rootView.viewTreeObserver
-    vto.removeOnPreDrawListener(preDrawListener)
-    if (vto.isAlive) vto.addOnPreDrawListener(preDrawListener)
+    coordinator.reAttachIfNeeded()
   }
 
   // ── Lifecycle ─────────────────────────────────────────────────────────────
@@ -234,22 +208,16 @@ internal class LegacyBlurController(
     if (w > 0 && h > 0) initBitmaps(w, h)
   }
 
-  private fun invalidatePool() {
-    capturedBitmap?.recycle(); capturedBitmap = null
-    captureCanvas = null
-    inputAlloc?.destroy();  inputAlloc  = null
-    outputAlloc?.destroy(); outputAlloc = null
-    initialized = false
-  }
-
   fun destroy() {
-    rootView.viewTreeObserver.removeOnPreDrawListener(preDrawListener)
-    Choreographer.getInstance().removeFrameCallback(frameCallback)
+    coordinator.unregister(view)
     inputAlloc?.destroy()
     outputAlloc?.destroy()
-    blurScript?.destroy()
-    rs?.destroy()
+    releaseRenderScript()
+    rs = null
+    blurScript = null
     capturedBitmap?.recycle()
+    capturedBitmap = null
+    cropCanvas = null
   }
 
   // ── Helpers ───────────────────────────────────────────────────────────────
