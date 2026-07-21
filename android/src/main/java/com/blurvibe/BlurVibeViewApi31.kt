@@ -28,33 +28,101 @@ import kotlin.random.Random
 
 /**
  * BlurVibeViewApi31 — Backdrop blur for Android API 31+
- * ─── Shared capture (fixes multi-BlurView breakage)
- * ─── Self-exclusion for overlapping/stacked BlurViews
- * ─── Update trigger
- * ─── RenderEffect thread safety (per-frame RenderNode pattern)
- * ─── Style props (borderRadius, borderWidth, borderColor)
+ *
+ * ─── Shared capture (fixes multi-BlurView breakage) ──────────────────────────
+ *
+ * Capture (root.draw()) is now owned by ONE BlurCaptureCoordinator per root,
+ * shared across every BlurView under it — see that class's doc for the full
+ * rationale. Previously, each BlurVibeViewApi31 called root.draw() entirely
+ * on its own; N blur views under one root meant N full offscreen re-renders
+ * of the whole view tree per frame — cost scaling linearly with the number
+ * of mounted blur views, which broke down inside scrolling lists or screens
+ * with several blur surfaces.
+ *
+ * This view's job is now: crop ITS OWN screen-space region out of the
+ * coordinator's single shared raw bitmap, then apply its own GPU blur via
+ * RenderEffect to that (small) crop — preserving full per-instance
+ * blurAmount/overlayColor/progressiveBlur/noise customization while
+ * eliminating the redundant per-view root.draw() cost.
+ *
+ * ─── Self-exclusion for overlapping/stacked BlurViews ────────────────────────
+ *
+ * draw() checks `if (canvas is BlurVibeCanvas) return` — a typed marker
+ * Canvas the coordinator uses ONLY for its shared capture pass. Checking the
+ * canvas TYPE (not a per-instance flag) means this correctly excludes THIS
+ * view — and every other BlurVibeView/BlurVibeViewApi31 under the same
+ * root, including ones nested or stacked on top of each other — from that
+ * one shared capture, with zero coordination needed between multiple
+ * simultaneously-registered views. A real on-screen draw always uses the
+ * hardware display canvas, never this marker.
+ *
+ * ─── Update trigger ───────────────────────────────────────────────────────────
+ *
+ * The coordinator invalidates every registered view right after each shared
+ * capture completes (within the same frame's pre-draw phase, before the
+ * real draw traversal begins). Android then calls THIS view's onDraw()
+ * later in that same frame — which is when crop + GPU blur actually happen
+ * (see refreshFromSharedCapture() / drawHardwarePath() below), guaranteed
+ * to read freshly-captured shared content because Android's pipeline always
+ * finishes all pre-draw work before the real draw traversal starts. No
+ * separate per-view preDrawListener needed any more.
+ *
+ * ─── RenderEffect thread safety (per-frame RenderNode pattern) ──────────────
+ *
+ * Each onDraw() creates a FRESH RenderNode for that frame:
+ *   beginRecording() → drawBitmap(capturedBitmap) → endRecording()
+ *   setRenderEffect(RenderEffect.createBlurEffect(localRadius)) — UNSCALED
+ *   canvas.scale(scaleW, scaleH) → canvas.drawRenderNode(freshNode)
+ *
+ * RenderThread replays nodeN (immutable after endRecording) while the main
+ * thread creates a completely different nodeN+1 object for the next frame —
+ * no shared mutable state between threads, so no SIGSEGV risk (unlike an
+ * earlier version that reused ONE RenderNode across frames while
+ * Reanimated-driven redraws raced its recording).
+ *
+ * localRadius is applied UNSCALED to the RenderEffect, in the bitmap's own
+ * downsampled coordinate space. canvas.scale(scaleW, scaleH) during draw is
+ * the ONLY upscale step — it naturally magnifies the blur radius along with
+ * everything else when the bitmap is drawn at view size.
+ *
+ * ─── Style props (borderRadius, borderWidth, borderColor) ───────────────────
+ *
+ * outlineProvider = BACKGROUND: ReactViewBackgroundDrawable.getOutline()
+ * handles all RN borderRadius variants. clipToOutline only enabled when
+ * radius > 0. background?.draw(canvas) at END of onDraw() redraws the
+ * border ON TOP of blur.
  */
 @RequiresApi(Build.VERSION_CODES.S)
 class BlurVibeViewApi31(context: Context) : ReactViewGroup(context) {
 
-  // ── Blur params ───
+  // ── Blur params ────────────────────────────────────────────────────────────
 
   private var blurAmount     = 10f
   private var overlayColor   = Color.TRANSPARENT
   private var cornerRadiusPx = 0f
 
-  // ── Progressive blur ───
+  // ── Progressive blur ──────────────────────────────────────────────────────
 
   private var progressiveDirection      = PROGRESSIVE_NONE
   private var progressiveStartIntensity = 1f
   private var progressiveEndIntensity   = 0f
 
-  // ── Noise ───
+  // ── Noise ─────────────────────────────────────────────────────────────────
+  //
+  // The underlying noise bitmap/shader are SHARED globally (companion
+  // object, lazy) — see companion for rationale. noisePaint stays
+  // per-instance since each view's noiseFactor (alpha) differs.
 
   private var noiseFactor = 0.08f
   private val noisePaint  = Paint()
 
-  // ── Own crop destination bitmap ───
+  // ── Own crop destination bitmap ───────────────────────────────────────────
+  //
+  // Sized to THIS view's own downsampled, stride-rounded dimensions.
+  // Populated by cropping a region out of coordinator.currentBitmap, then
+  // GPU-blurred via the per-frame RenderNode in drawHardwarePath().
+  // Thread safety: cropped in onDraw() (main thread), the resulting
+  // RenderNode is a fresh object per frame — see class doc.
 
   private var capturedBitmap: Bitmap? = null
   private var cropCanvas: Canvas? = null
@@ -69,7 +137,15 @@ class BlurVibeViewApi31(context: Context) : ReactViewGroup(context) {
   private val cropDstRect = RectF()
   private val drawDstRect = RectF()
 
-  // ── Cached RenderEffect ───
+  // ── Cached RenderEffect ────────────────────────────────────────────────────
+  //
+  // RenderEffect is immutable/shareable data (like a Paint or Shader) — safe
+  // to reuse across DIFFERENT RenderNode instances as long as its parameters
+  // haven't changed. blurAmount typically stays constant for many consecutive
+  // frames, so only rebuilding when the radius actually changes avoids an
+  // allocation on every single frame. This is independent of (and compatible
+  // with) keeping the RenderNode itself fresh every frame for thread safety —
+  // see class doc.
 
   private var cachedBlurEffect: RenderEffect? = null
   private var cachedRadius: Float = -1f
@@ -130,6 +206,10 @@ class BlurVibeViewApi31(context: Context) : ReactViewGroup(context) {
 
   override fun onWindowFocusChanged(hasWindowFocus: Boolean) {
     super.onWindowFocusChanged(hasWindowFocus)
+    // Android can silently kill and replace a ViewTreeObserver during
+    // split-screen/PiP/freeform transitions. Ask the coordinator (which
+    // owns the actual listener) to re-attach to the current observer —
+    // safe/cheap to call redundantly from multiple views under the same root.
     if (hasWindowFocus) coordinator?.reAttachIfNeeded()
   }
 
@@ -182,13 +262,18 @@ class BlurVibeViewApi31(context: Context) : ReactViewGroup(context) {
     canvas.drawBitmap(shared, cropSrcRect, cropDstRect, cropPaint)
   }
 
-  // ── draw() — skip self during the coordinator's shared capture ───
+  // ── draw() — skip self during the coordinator's shared capture ───────────
+  //
+  // Marker-canvas self-exclusion: if (canvas instanceof BlurVibeCanvas) return false;
+  // BlurVibeCanvas is a marker. Real screen draws use the hardware display
+  // canvas — never a BlurVibeCanvas. Zero race condition with Reanimated.
+
   override fun draw(canvas: Canvas) {
     if (canvas is BlurVibeCanvas) return
     super.draw(canvas)
   }
 
-  // ── onDraw ───
+  // ── onDraw ────────────────────────────────────────────────────────────────
 
   override fun onDraw(canvas: Canvas) {
     if (!blurEnabled || !initialized) return
@@ -206,7 +291,10 @@ class BlurVibeViewApi31(context: Context) : ReactViewGroup(context) {
     }
   }
 
-  // ── Hardware path (API 31+, normal case) ──
+  // ── Hardware path (API 31+, normal case) ──────────────────────────────────
+  //
+  // Per-frame RenderNode + RenderEffect.createBlurEffect() — see class doc
+  // for the full thread-safety rationale.
 
   private fun drawHardwarePath(canvas: Canvas, bmp: Bitmap, w: Float, h: Float) {
     val localRadius = localBlurRadius(blurAmount)
@@ -220,6 +308,11 @@ class BlurVibeViewApi31(context: Context) : ReactViewGroup(context) {
     blurNode.endRecording()
 
     // Apply RenderEffect — UNSCALED. canvas.scale() below is the ONLY
+    // upscale step. Cached: RenderEffect is immutable/shareable data, safe
+    // to reuse across the FRESH RenderNode created above (the node must be
+    // fresh per-frame for thread safety; the effect describing WHAT to do
+    // to it does not need to be, and typically stays constant for many
+    // consecutive frames since blurAmount rarely changes every frame).
     var effect = cachedBlurEffect
     if (effect == null || cachedRadius != localRadius) {
       effect = RenderEffect.createBlurEffect(localRadius, localRadius, Shader.TileMode.CLAMP)
@@ -272,7 +365,7 @@ class BlurVibeViewApi31(context: Context) : ReactViewGroup(context) {
     background?.draw(canvas)
   }
 
-  // ── Software fallback (screenshots, software transitions) ───
+  // ── Software fallback (screenshots, software transitions) ─────────────────
 
   private fun drawSoftwarePath(canvas: Canvas, bmp: Bitmap, w: Float, h: Float) {
     canvas.save()
@@ -295,7 +388,7 @@ class BlurVibeViewApi31(context: Context) : ReactViewGroup(context) {
     background?.draw(canvas)
   }
 
-  // ── Progressive shader ───
+  // ── Progressive shader ────────────────────────────────────────────────────
 
   private fun buildProgressiveShader(w: Float, h: Float): Shader? {
     val sc = Color.argb((progressiveStartIntensity.coerceIn(0f,1f)*255).toInt(),0,0,0)
@@ -310,7 +403,15 @@ class BlurVibeViewApi31(context: Context) : ReactViewGroup(context) {
     }
   }
 
-  // ── Shared noise bitmap (resource-usage fix) ───
+  // ── Shared noise bitmap (resource-usage fix) ──────────────────────────────
+  //
+  // generateNoiseBitmap() used a fixed seed (Random(42)) — meaning EVERY
+  // instance produced the IDENTICAL 64×64 bitmap. Generating it per-instance
+  // (via a 4096-call setPixel() loop — a known-slow API, one JNI crossing
+  // per pixel) on every single view attach was pure waste: same content,
+  // regenerated repeatedly, especially costly with FlatList recycling where
+  // attach happens often. Now generated ONCE, shared by every
+  // BlurVibeViewApi31 in the app, ref-counted like the coordinator registry.
 
   private fun acquireSharedNoiseBitmap() {
     if (sharedNoiseBitmap == null) {
@@ -370,6 +471,11 @@ class BlurVibeViewApi31(context: Context) : ReactViewGroup(context) {
   fun setProgressiveStartIntensity(v: Float) { progressiveStartIntensity = v.coerceIn(0f,1f); invalidate() }
   fun setProgressiveEndIntensity(v: Float)   { progressiveEndIntensity   = v.coerceIn(0f,1f); invalidate() }
   fun setNoiseFactor(v: Float)               { noiseFactor = v.coerceIn(0f,1f); invalidate() }
+
+  // enabled/autoUpdate no longer manage any listener — the coordinator's
+  // single shared listener stays active as long as ANY view is registered
+  // under that root, regardless of individual enabled/autoUpdate state.
+  // These flags now purely gate what onDraw() does each frame (see above).
 
   fun applyBlurEnabled(enabled: Boolean) {
     blurEnabled = enabled

@@ -11,17 +11,19 @@ import android.renderscript.Element
 import android.renderscript.RenderScript
 import android.renderscript.ScriptIntrinsicBlur
 import android.view.ViewGroup
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * LegacyBlurController — per-view crop + blur for Android API 21–30.
  *
- * ─── Shared capture 
+ * ─── Shared capture ───────────────────────────────────────────────────────────
  *
- * ─── Self-exclusion
+ * ─── Self-exclusion ───────────────────────────────────────────────────────────
  *
- * ─── Update trigger 
+ * ─── Update trigger ───────────────────────────────────────────────────────────
  *
- * ─── Shared RenderScript context (resource-usage fix)
+ * ─── Shared RenderScript context (resource-usage fix) ────────────────────────
+ *
  */
 @Suppress("DEPRECATION")
 internal class LegacyBlurController(
@@ -31,8 +33,13 @@ internal class LegacyBlurController(
 
   companion object {
     private const val ROUNDING_VALUE = 64   // stride alignment (Samsung OEM requirement)
-    private const val BLUR_RADIUS    = 25f  // max RenderScript kernel
-    private const val BLUR_ROUNDS    = 1    // single pass — small bitmap already looks smooth
+    private const val BLUR_RADIUS    = 25f  // default/fallback radius
+    // 2 full pass-pairs (horizontal+vertical, twice) for the native box-blur
+    // path — two iterations of box blur closely approximate a Gaussian, a
+    // well-established technique. This does NOT apply to the RenderScript
+    // fallback below, which is a real single-call Gaussian intrinsic — see
+    // blurBitmap()'s doc for why doubling that specifically is avoided.
+    private const val BLUR_ROUNDS    = 2
 
     // ── Shared RenderScript — global, ref-counted, main-thread only ─────────
     private var sharedRs: RenderScript? = null
@@ -64,7 +71,11 @@ internal class LegacyBlurController(
 
   private val coordinator = BlurCaptureCoordinator.forRoot(rootView)
 
-  // ── Own crop destination bitmap 
+  // ── Own crop destination bitmap ───────────────────────────────────────────
+  //
+  // Sized to THIS view's own downsampled, stride-rounded dimensions.
+  // Populated by cropping a region out of coordinator.currentBitmap, then
+  // blurred in place — same role as before, just sourced differently.
 
   private var capturedBitmap: Bitmap? = null
   private var cropCanvas: Canvas? = null
@@ -94,6 +105,13 @@ internal class LegacyBlurController(
   var blurRadius:   Float  = BLUR_RADIUS
   var enabled:      Boolean = true
   var autoUpdate:   Boolean = true
+
+  // Per-instance re-entrancy guard — prevents this view's blur pipeline
+  // from being entered again while a previous call is still in flight
+  // (each BlurVibeView has its OWN guard, so DIFFERENT views' blur calls
+  // are unaffected by each other — this only protects a single instance
+  // against being re-entered on itself).
+  private val isBlurring = AtomicBoolean(false)
 
   // ── Init ───────────────────────────────────────────────────────────────────
 
@@ -157,10 +175,32 @@ internal class LegacyBlurController(
     cropDstRect.set(0f, 0f, bitmap.width.toFloat(), bitmap.height.toFloat())
     canvas.drawBitmap(shared, cropSrcRect, cropDstRect, cropPaint)
 
-    repeat(BLUR_ROUNDS) { blurBitmap(bitmap) }
+    blurBitmap(bitmap)
   }
 
+  // ── Blur dispatch: native (multi-threaded) first, then RenderScript, then software ─
+
   private fun blurBitmap(bitmap: Bitmap) {
+    if (!isBlurring.compareAndSet(false, true)) return
+    try {
+      val radius = blurRadius.toInt().coerceIn(BlurThreadPool.MIN_RADIUS, BlurThreadPool.MAX_RADIUS)
+
+      var nativeOk = true
+      repeat(BLUR_ROUNDS) {
+        if (nativeOk) {
+          nativeOk = BlurThreadPool.blurRound(bitmap, radius, BlurThreadPool.DIRECTION_HORIZONTAL) &&
+                     BlurThreadPool.blurRound(bitmap, radius, BlurThreadPool.DIRECTION_VERTICAL)
+        }
+      }
+      if (nativeOk) return
+
+      blurBitmapRenderScript(bitmap)
+    } finally {
+      isBlurring.set(false)
+    }
+  }
+
+  private fun blurBitmapRenderScript(bitmap: Bitmap) {
     val r  = rs          ?: return softwareBlur(bitmap)
     val sc = blurScript  ?: return softwareBlur(bitmap)
     try {
