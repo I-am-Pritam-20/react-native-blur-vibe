@@ -1,7 +1,7 @@
 {
   "name": "react-native-blur-vibe",
   "version": "0.2.1",
-  "description": "React Native package implementing Blur View in iOS and Android",
+  "description": "React Native package implementing Blur View and Liquid Glass Vibe in iOS and Android",
   "main": "./lib/commonjs/index.js",
   "module": "./lib/module/index.js",
   "react-native": "./src/index.ts",

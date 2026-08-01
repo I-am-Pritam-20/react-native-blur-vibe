@@ -1,0 +1,102 @@
+// liquid_glass_refraction.agsl
+//
+// Real-time optical refraction for a rounded-rect "glass" panel — NOT a
+// blur. Center of the panel samples straight through (with color grading
+// only); near the panel's edges, sample coordinates are displaced along
+// the shape's surface normal (a lens/bulge effect), with chromatic
+// dispersion (slightly different displacement per color channel,
+// simulating how real glass edges fringe with rainbow color separation).
+//
+// `content`: the captured backdrop (what's behind the glass panel),
+// supplied as a child shader input — bound to a RenderNode's own rendered
+// content via RenderEffect.createRuntimeShaderEffect(shader, "content").
+
+uniform shader content;
+
+uniform float2  panelSize;
+uniform float2  panelOffset;
+uniform float4  cornerRadii;      // top-left, top-right, bottom-right, bottom-left
+uniform float   edgeZoneWidth;    // how far from the edge refraction begins
+uniform float   bulgeStrength;    // how strongly edge pixels displace
+uniform float   curvatureBlend;   // 0 = pure edge-normal displacement, 1 = pure radial-from-center
+uniform float   dispersion;       // chromatic spread amount at the edge
+uniform float   saturationBoost;
+uniform float   contrastBoost;
+uniform float   brightnessLift;
+uniform float4  tintColor;
+uniform float   tintStrength;
+
+// Signed distance to a rounded rectangle centered at the origin.
+// Negative = inside the shape, positive = outside, 0 = on the boundary.
+float roundedRectDistance(float2 p, float2 halfSize, float4 radii) {
+  float radius = (p.x > 0.0)
+      ? (p.y > 0.0 ? radii.z : radii.y)
+      : (p.y > 0.0 ? radii.w : radii.x);
+  float2 q = abs(p) - halfSize + radius;
+  return min(max(q.x, q.y), 0.0) + length(max(q, 0.0)) - radius;
+}
+
+// Smooth easing curve used to shape how displacement strength ramps up
+// as a pixel approaches the panel edge (0 at the edge-zone's inner
+// boundary, 1 right at the boundary) — a circular ease-out, giving a
+// convex lens-like falloff rather than a linear ramp.
+float lensEase(float t) {
+  float c = clamp(t, 0.0, 1.0);
+  return 1.0 - sqrt(max(0.0, 1.0 - c * c));
+}
+
+float3 gradeColor(float3 color) {
+  float luma = dot(color, float3(0.2126, 0.7152, 0.0722));
+  float3 saturated = mix(float3(luma), color, saturationBoost);
+  float3 contrasted = (saturated - 0.5) * contrastBoost + 0.5 + brightnessLift;
+  return mix(contrasted, tintColor.rgb, tintStrength * tintColor.a);
+}
+
+half4 main(float2 coord) {
+  float2 local = coord - panelOffset - panelSize * 0.5;
+  float2 halfSize = panelSize * 0.5;
+
+  float dist = roundedRectDistance(local, halfSize, cornerRadii);
+
+  // Outside the panel entirely — fully transparent, nothing to draw.
+  if (dist > 0.0) {
+    return half4(0.0);
+  }
+
+  float edgeProximity = clamp(-dist / edgeZoneWidth, 0.0, 1.0); // 1 at edge, 0 past edgeZoneWidth inward
+  bool inEdgeZone = edgeProximity > 0.0 && edgeZoneWidth > 0.0;
+
+  if (!inEdgeZone) {
+    // Deep interior — straight through, color-graded only, no displacement.
+    float3 straight = content.eval(coord).rgb;
+    return half4(gradeColor(straight), 1.0);
+  }
+
+  // Surface normal approximation via a small numerical gradient of the
+  // distance field (a standard SDF-normal technique).
+  float e = 0.75;
+  float2 shapeNormal = normalize(float2(
+      roundedRectDistance(local + float2(e, 0.0), halfSize, cornerRadii) -
+      roundedRectDistance(local - float2(e, 0.0), halfSize, cornerRadii),
+      roundedRectDistance(local + float2(0.0, e), halfSize, cornerRadii) -
+      roundedRectDistance(local - float2(0.0, e), halfSize, cornerRadii)
+  ));
+
+  float2 radialNormal = length(local) > 0.001 ? normalize(local) : shapeNormal;
+  float2 displaceDir = normalize(mix(shapeNormal, radialNormal, curvatureBlend));
+
+  float displaceAmount = lensEase(edgeProximity) * bulgeStrength;
+
+  // Chromatic dispersion: sample red/green/blue at slightly different
+  // displacement magnitudes, simulating how real glass edges fringe.
+  float2 redOffset   = displaceDir * displaceAmount * (1.0 - dispersion);
+  float2 greenOffset  = displaceDir * displaceAmount;
+  float2 blueOffset  = displaceDir * displaceAmount * (1.0 + dispersion);
+
+  float r = content.eval(coord + redOffset).r;
+  float g = content.eval(coord + greenOffset).g;
+  float b = content.eval(coord + blueOffset).b;
+
+  float3 refracted = float3(r, g, b);
+  return half4(gradeColor(refracted), 1.0);
+}
