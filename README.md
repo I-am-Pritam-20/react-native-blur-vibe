@@ -3,9 +3,10 @@
 <a href="https://www.npmjs.com/package/react-native-blur-vibe"><img width="100%" height="35%" alt="github-banner" src="https://github.com/user-attachments/assets/78b2e5ec-5b57-48c0-b984-69cb57cbcf26" /></a>
 <br></br>
 
-A modern, actively maintained blur view for React Native. Works on **iOS** and **Android** with both Old (Paper) and New (Fabric) Architecture support.
+A modern, actively maintained blur view and liquid glass vibe for React Native. Works on **iOS** and **Android** with both Old (Paper) and New (Fabric) Architecture support.
 
-> The key difference from other blur libraries: `overlayColor` works on **both iOS and Android** — letting you control blur visibility the same way CSS `backdrop-filter` + `background-color` works on the web.
+> The key difference from other blur libraries: `overlayColor` works on **both iOS and Android** — letting you control blur visibility the same way CSS `backdrop-filter` + `background-color` works on the web. <br></br>
+ Multiple `BlurView`s on the same screen — including inside `FlatList`/`ScrollView`, and even overlapping/stacked ones — share ONE capture pass per screen, so adding more blur surfaces doesn't cost more. On Android, blur runs on a native, multi-threaded engine for speed. A second component, `LiquidGlassView`, adds real-time optical refraction on Android API 33+, with a blur-based fallback everywhere else.
 
 <br></br>
 
@@ -20,6 +21,15 @@ A modern, actively maintained blur view for React Native. Works on **iOS** and *
     <img src="https://img.shields.io/badge/Android-API%2021%2B-green?style=flat-square" alt="Android API 21+" />
   </p>
 </div>
+
+---
+
+## Components
+
+| Component | What it does |
+|---|---|
+| [`BlurView`](#blurview) | CSS-style backdrop blur, `overlayColor` tint, progressive blur, noise grain |
+| [`LiquidGlassView`](#liquidglassview) | Real-time optical refraction ("liquid glass") on Android API 33+, blur + highlight fallback elsewhere |
 
 ---
 
@@ -39,6 +49,8 @@ A modern, actively maintained blur view for React Native. Works on **iOS** and *
 | New Architecture (Fabric) | ✅ | ✅ | ✅ |
 | Many `BlurView`s per screen (FlatList, stacked cards) | ✅ (native) | ✅ shared capture | ✅ shared capture |
 | Overlapping / stacked `BlurView`s | ✅ (native) | ✅ | ✅ |
+| Native multi-threaded blur engine | — (uses `UIVisualEffectView`) | — (uses `RenderEffect`, GPU) | ✅ |
+| `LiquidGlassView` real refraction | ❌ (blur fallback) | ✅ (API 33+ only) | ❌ (blur fallback) |
 
 ---
 
@@ -56,11 +68,12 @@ yarn add react-native-blur-vibe
 cd ios && pod install
 ```
 
-Minimum deployment target: **iOS 13.0**
+### Installation Requirement:
 
-### Android
+Minimum iOS version : **iOS 13.0**
 
-Minimum SDK: **API 21** (Android 5.0). No extra configuration needed.
+Minimum Android SDK version: **API 21** (Android 5.0)
+
 
 ---
 
@@ -84,6 +97,9 @@ export default function Card() {
 ```
 
 ---
+
+# BlurView
+
 
 ## Props
 
@@ -523,8 +539,6 @@ Every card's `BlurView` shares one capture pass per frame — adding more blurre
 
 ### Multiple blur surfaces on one screen
 
-A blurred tab bar, several blurred cards, and a blurred header can all coexist on the same screen — each with its own independent settings — without the app slowing down as more are added.
-
 ```tsx
 <View style={{ flex: 1 }}>
   <ScrollView>
@@ -551,8 +565,6 @@ A blurred tab bar, several blurred cards, and a blurred header can all coexist o
 
 ### Overlapping / stacked blur surfaces
 
-A blurred card can sit inside a blurred modal — each correctly blurs only what's behind *it*, not the other blur layer.
-
 ```tsx
 <Modal visible={visible} transparent>
   <BlurView blurAmount={30} overlayColor="#00000060" style={StyleSheet.absoluteFill} />
@@ -570,12 +582,171 @@ A blurred card can sit inside a blurred modal — each correctly blurs only what
 
 ---
 
+# LiquidGlassView
+
+Real-time optical refraction — a lens-like bulge with chromatic dispersion at a panel's edges and a clear pass-through center, the same visual family as iOS/visionOS "liquid glass." This is a **separate component from `BlurView`**, not a prop on it, because the two techniques are fundamentally different and have different platform support.
+
+| | |
+|---|---|
+| Android API 33+ | ✅ Real refraction via `RuntimeShader` |
+| Android API < 33 | ⚠️ Fallback: blur + a static diagonal highlight + rim stroke |
+| iOS | ⚠️ Fallback: blur + a static diagonal highlight + rim stroke |
+
+The fallback is a **visual approximation**, not real refraction — true optical bending requires a runtime shader, which only exists on Android 33+ today. This is an intentional, visible difference by design, not a bug.
+
+## Quick start
+
+```tsx
+import { LiquidGlassView } from 'react-native-blur-vibe';
+import { StyleSheet, ImageBackground } from 'react-native';
+
+<ImageBackground source={require('./bg.jpg')} style={{ flex: 1 }}>
+  <LiquidGlassView
+    refractionAmount={45}
+    blurAmount={10}
+    style={[StyleSheet.absoluteFill, { borderRadius: 24 }]}
+  />
+</ImageBackground>
+```
+
+## Props
+
+### `refractionAmount`
+
+| | |
+|---|---|
+| Type | `number` (0–100) |
+| Default | `40` |
+| Platform | **Android API 33+ only** |
+
+How strongly content displaces near the panel's edges. `0` = flat, no bulge. Ignored on API < 33 / iOS, where this component falls back to blur + highlight instead.
+
+### `blurAmount`
+
+| | |
+|---|---|
+| Type | `number` (0–100) |
+| Default | `30` |
+| Platform | All |
+
+On API 33+: `0` gives pure clear refraction (no frosting); higher values chain a blur pass before the refraction shader, for a "frosted liquid glass" look. On the fallback path (API < 33 / iOS): this is the **only** effect applied — no refraction happens there at all.
+
+### `edgeWidth`
+
+| | |
+|---|---|
+| Type | `number` (dp) |
+| Default | `24` |
+| Platform | **Android API 33+ only** |
+
+How far from the panel's edge refraction begins. Content further than this from any edge is shown clear/undistorted.
+
+### `curvatureBlend`
+
+| | |
+|---|---|
+| Type | `number` (0.0–1.0) |
+| Default | `0.5` |
+| Platform | **Android API 33+ only** |
+
+`0` = displacement follows the rounded-rect's own edge normal (a flatter "pane of glass with curved edges" look). `1` = displacement is radial from the panel's center (a more "spherical lens" look).
+
+### `dispersion`
+
+| | |
+|---|---|
+| Type | `number` (0.0–1.0) |
+| Default | `0.35` |
+| Platform | **Android API 33+ only** |
+
+Chromatic dispersion strength at the edges — how far apart red/green/blue sample offsets spread, simulating the rainbow fringing real glass edges show. `0` disables dispersion (edges still refract, but stay color-neutral).
+
+### `saturationBoost` / `contrastBoost` / `brightnessLift`
+
+| | | | |
+|---|---|---|---|
+| Type | `number` | `number` | `number` |
+| Default | `1.1` | `1.05` | `0.02` |
+| Platform | All (applied in the color-grading step of both the shader and fallback paths) |
+
+Global color-grading multipliers/offset applied across the whole panel.
+
+### `tintColor`
+
+| | |
+|---|---|
+| Type | `string` |
+| Default | `"#FFFFFF14"` |
+| Platform | All |
+
+RGBA tint blended over the panel — same format as `BlurView`'s `overlayColor`: `"transparent"`, `"#RGB"`, `"#RRGGBB"`, `"#RRGGBBAA"`.
+
+## Style props
+
+Same as `BlurView` — all standard RN View style props work, including `borderRadius` (drives both the visual clip **and** the refraction shape's corner radii on API 33+, so the "glass" bulges follow the same rounded corners you set in `style`).
+
+```tsx
+<LiquidGlassView
+  refractionAmount={50}
+  blurAmount={15}
+  dispersion={0.4}
+  style={{
+    borderRadius: 28,
+    overflow: 'hidden',
+    ...StyleSheet.absoluteFillObject,
+  }}
+/>
+```
+
+## Usage examples
+
+### Subtle glass panel, minimal dispersion
+
+```tsx
+<LiquidGlassView
+  refractionAmount={25}
+  blurAmount={0}
+  dispersion={0.1}
+  style={[StyleSheet.absoluteFill, { borderRadius: 16 }]}
+/>
+```
+
+### Strong frosted liquid glass card
+
+```tsx
+<LiquidGlassView
+  refractionAmount={60}
+  blurAmount={35}
+  dispersion={0.5}
+  tintColor="#FFFFFF20"
+  style={[StyleSheet.absoluteFill, { borderRadius: 24 }]}
+/>
+```
+
+### Spherical lens look
+
+```tsx
+<LiquidGlassView
+  refractionAmount={70}
+  curvatureBlend={1}
+  edgeWidth={40}
+  style={[StyleSheet.absoluteFill, { borderRadius: 32 }]}
+/>
+```
+
+---
+
 ## TypeScript
 
 Full TypeScript support with detailed JSDoc on every prop.
 
 ```ts
-import type { BlurViewProps, BlurType, ProgressiveBlurDirection } from 'react-native-blur-vibe';
+import type {
+  BlurViewProps,
+  BlurType,
+  ProgressiveBlurDirection,
+  LiquidGlassViewProps,
+} from 'react-native-blur-vibe';
 ```
 
 ---
