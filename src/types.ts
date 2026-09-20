@@ -326,18 +326,4 @@ export interface BlurViewProps extends ViewProps {
    * @default true
    */
   enabled?: boolean;
-
-  /**
-   * Automatically re-capture and re-blur when the content behind changes.
-   *
-   * When `false`, the blur is captured once at mount and never updated.
-   * Use this for completely static backgrounds (e.g. a blurred album art
-   * card where the image never changes) — eliminates all per-frame cost
-   * on Android API < 31.
-   *
-   * **Works on both iOS and Android.**
-   *
-   * @default true
-   */
-  autoUpdate?: boolean;
 }

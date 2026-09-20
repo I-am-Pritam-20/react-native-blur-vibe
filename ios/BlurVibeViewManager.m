@@ -16,7 +16,6 @@ RCT_EXPORT_VIEW_PROPERTY(overlayColor, NSString)
 RCT_EXPORT_VIEW_PROPERTY(reducedTransparencyFallbackColor, NSString)
 RCT_EXPORT_VIEW_PROPERTY(blurRadius, NSNumber)
 RCT_EXPORT_VIEW_PROPERTY(enabled, NSNumber)
-RCT_EXPORT_VIEW_PROPERTY(autoUpdate, NSNumber)
 
 // ── Progressive blur props ──────────────────────────────────────────────────
 RCT_EXPORT_VIEW_PROPERTY(progressiveBlurDirection, NSString)

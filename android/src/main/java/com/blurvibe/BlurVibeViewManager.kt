@@ -82,14 +82,6 @@ class BlurVibeViewManager : SimpleViewManager<ViewGroup>() {
     }
   }
 
-  @ReactProp(name = "autoUpdate", defaultBoolean = true)
-  fun setAutoUpdate(view: ViewGroup, autoUpdate: Boolean) {
-    when (view) {
-      is BlurVibeViewApi31 -> view.setAutoUpdate(autoUpdate)
-      is BlurVibeView      -> view.setAutoUpdate(autoUpdate)
-    }
-  }
-
   @ReactProp(name = "borderRadius", defaultFloat = 0f)
   fun setBlurBorderRadius(view: ViewGroup, radius: Float) {
     when (view) {

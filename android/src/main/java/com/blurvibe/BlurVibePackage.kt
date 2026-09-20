@@ -10,5 +10,5 @@ class BlurVibePackage : ReactPackage {
     emptyList()
 
   override fun createViewManagers(reactContext: ReactApplicationContext): List<ViewManager<*, *>> =
-    listOf(BlurVibeViewManager())
+    listOf(BlurVibeViewManager(), LiquidGlassViewManager())
 }

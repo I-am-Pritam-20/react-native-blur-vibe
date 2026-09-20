@@ -43,7 +43,7 @@ A modern, actively maintained blur view and liquid glass vibe for React Native. 
 | Noise texture | ✅ | ✅ | ❌ |
 | Full RN style props | ✅ | ✅ | ✅ |
 | `blurType` | ✅ | ❌ | ❌ |
-| `enabled` / `autoUpdate` | ✅ | ✅ | ✅ |
+| `enabled` | ✅ | ✅ | ✅ |
 | Split-screen / PiP / Freeform | ✅ | ✅ | ✅ |
 | Old Architecture (Paper) | ✅ | ✅ | ✅ |
 | New Architecture (Fabric) | ✅ | ✅ | ✅ |
@@ -224,22 +224,6 @@ Enable or disable the blur effect. When `false`, the view renders transparently.
 
 ```tsx
 <BlurView blurAmount={30} enabled={isScrolling ? false : true} style={StyleSheet.absoluteFill} />
-```
-
----
-
-### `autoUpdate`
-
-| | |
-|---|---|
-| Type | `boolean` |
-| Default | `true` |
-| Platform | iOS + Android |
-
-When `false`, this `BlurView` stops refreshing and keeps showing whatever it last captured — useful for a completely static background (e.g. blurred album art) that never needs to change. Other `BlurView`s on the same screen keep updating normally regardless of this setting.
-
-```tsx
-<BlurView blurAmount={40} autoUpdate={false} style={StyleSheet.absoluteFill} />
 ```
 
 ---
@@ -498,7 +482,6 @@ const [isScrolling, setIsScrolling] = React.useState(false);
 // Capture once, never update — great for album art, splash screens
 <BlurView
   blurAmount={50}
-  autoUpdate={false}
   overlayColor="#00000030"
   style={StyleSheet.absoluteFill}
 />

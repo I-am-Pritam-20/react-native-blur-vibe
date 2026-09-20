@@ -11,7 +11,6 @@ interface NativeProps extends ViewProps {
   reducedTransparencyFallbackColor?: string;
   blurRadius?: WithDefault<Int32, 4>;
   enabled?: WithDefault<boolean, true>;
-  autoUpdate?: WithDefault<boolean, true>;
   progressiveBlurDirection?: WithDefault<string, 'none'>;
   progressiveStartIntensity?: WithDefault<Float, 1>;
   progressiveEndIntensity?: WithDefault<Float, 0>;

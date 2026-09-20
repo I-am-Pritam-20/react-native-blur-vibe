@@ -22,6 +22,13 @@ import java.util.concurrent.atomic.AtomicBoolean
  *
  * ─── Update trigger ───────────────────────────────────────────────────────────
  *
+ * refreshFromSharedCapture() always runs on every draw() call — no
+ * opt-out flag. See BlurVibeViewApi31's class doc for why an "autoUpdate"
+ * toggle was removed: skipping this step let onDraw() calls outside the
+ * coordinator's preDraw→invalidate chain (mid-fling ticks, etc.) resample
+ * a coordinator bitmap captured at a stale scroll offset, producing a
+ * visible parallax lag between the blurred patch and the real content.
+ *
  * ─── Shared RenderScript context (resource-usage fix) ────────────────────────
  *
  */
@@ -104,7 +111,6 @@ internal class LegacyBlurController(
   var overlayColor: Int    = Color.TRANSPARENT
   var blurRadius:   Float  = BLUR_RADIUS
   var enabled:      Boolean = true
-  var autoUpdate:   Boolean = true
 
   // Per-instance re-entrancy guard — prevents this view's blur pipeline
   // from being entered again while a previous call is still in flight
@@ -225,7 +231,7 @@ internal class LegacyBlurController(
 
   fun draw(canvas: Canvas, viewWidth: Float, viewHeight: Float) {
     if (!enabled) return
-    if (autoUpdate) refreshFromSharedCapture()
+    refreshFromSharedCapture()
     capturedBitmap?.takeIf { !it.isRecycled }?.let { bmp ->
       drawDstRect.set(0f, 0f, viewWidth, viewHeight)
       canvas.drawBitmap(bmp, null, drawDstRect, drawPaint)

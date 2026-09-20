@@ -99,10 +99,6 @@ class BlurVibeView(context: Context) : ReactViewGroup(context) {
     if (!enabled) invalidate()
   }
 
-  fun setAutoUpdate(autoUpdate: Boolean) {
-    blurController?.autoUpdate = autoUpdate
-  }
-
   override fun onLayout(changed: Boolean, left: Int, top: Int, right: Int, bottom: Int) {}
 
   // ── Helpers ────────────────────────────────────────────────────────────────

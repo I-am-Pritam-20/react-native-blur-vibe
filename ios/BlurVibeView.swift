@@ -7,11 +7,11 @@ import UIKit
 @objc(BlurVibeView)
 class BlurVibeView: UIView {
 
-  // MARK: - Private
+  // Private
 
   private var hostingController: UIHostingController<BlurVibeSwiftUIView>?
 
-  // MARK: - Props
+  // Props
 
   @objc var blurAmount: NSNumber = 10 { didSet { updateView() } }
   @objc var blurType: NSString = "light" { didSet { updateView() } }
@@ -25,9 +25,8 @@ class BlurVibeView: UIView {
   @objc var progressiveEndIntensity: NSNumber   = 0.0   { didSet { updateView() } }
   @objc var noiseFactor: NSNumber               = 0.08  { didSet { updateView() } }
   @objc var enabled: NSNumber                    = 1     { didSet { updateView() } }
-  @objc var autoUpdate: NSNumber                 = 1     { didSet { updateView() } }
 
-  // MARK: - Init
+  // Init
 
   override init(frame: CGRect) {
     super.init(frame: frame)
@@ -39,7 +38,7 @@ class BlurVibeView: UIView {
     backgroundColor = .clear
   }
 
-  // MARK: - Layout
+  // Layout
 
   override func layoutSubviews() {
     super.layoutSubviews()
@@ -50,7 +49,7 @@ class BlurVibeView: UIView {
     }
   }
 
-  // MARK: - Hosting Controller
+  // Hosting Controller
 
   private func setupHostingController() {
     if let old = hostingController {
@@ -95,7 +94,7 @@ class BlurVibeView: UIView {
     )
   }
 
-  // MARK: - Prop parsers
+  // Prop parsers
 
   private func progressiveDirectionFromString(_ s: String) -> ProgressiveBlurDirection? {
     switch s {
@@ -178,7 +177,7 @@ class BlurVibeView: UIView {
     }
   }
 
-  // MARK: - Cleanup
+  // Cleanup
 
   deinit {
     hostingController?.view.removeFromSuperview()

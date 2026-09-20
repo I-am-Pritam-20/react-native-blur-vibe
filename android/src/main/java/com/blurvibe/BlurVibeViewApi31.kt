@@ -67,6 +67,19 @@ import kotlin.random.Random
  * finishes all pre-draw work before the real draw traversal starts. No
  * separate per-view preDrawListener needed any more.
  *
+ * refreshFromSharedCapture() always runs on every onDraw() call — there is
+ * no opt-out. An earlier "autoUpdate" flag let callers skip this crop step,
+ * but onDraw() can also be triggered outside the preDraw→invalidate chain
+ * (e.g. mid-fling scroll ticks, Reanimated-driven layout on the UI thread).
+ * When that happened with autoUpdate left on, the crop position (read fresh
+ * from getLocationInWindow() on THIS call) could be resampled against a
+ * coordinator bitmap captured at a slightly earlier scroll offset, so the
+ * blurred patch visibly lagged/slid relative to the real content — a
+ * parallax artifact, not a real perf win. Always refreshing here keeps the
+ * crop rect and the bitmap it samples from as close together in time as
+ * onDraw() allows; the coordinator's own downsample/shared-bitmap reuse is
+ * what actually keeps this path cheap.
+ *
  * ─── RenderEffect thread safety (per-frame RenderNode pattern) ──────────────
  *
  * Each onDraw() creates a FRESH RenderNode for that frame:
@@ -160,7 +173,6 @@ class BlurVibeViewApi31(context: Context) : ReactViewGroup(context) {
   // ── State ─────────────────────────────────────────────────────────────────
 
   private var blurEnabled = true
-  private var autoUpdate  = true
 
   // ── Paint ─────────────────────────────────────────────────────────────────
 
@@ -280,7 +292,7 @@ class BlurVibeViewApi31(context: Context) : ReactViewGroup(context) {
     val w = width.toFloat();  if (w <= 0f) return
     val h = height.toFloat(); if (h <= 0f) return
 
-    if (autoUpdate) refreshFromSharedCapture()
+    refreshFromSharedCapture()
 
     val bmp = capturedBitmap?.takeIf { !it.isRecycled } ?: return
 
@@ -472,18 +484,14 @@ class BlurVibeViewApi31(context: Context) : ReactViewGroup(context) {
   fun setProgressiveEndIntensity(v: Float)   { progressiveEndIntensity   = v.coerceIn(0f,1f); invalidate() }
   fun setNoiseFactor(v: Float)               { noiseFactor = v.coerceIn(0f,1f); invalidate() }
 
-  // enabled/autoUpdate no longer manage any listener — the coordinator's
-  // single shared listener stays active as long as ANY view is registered
-  // under that root, regardless of individual enabled/autoUpdate state.
-  // These flags now purely gate what onDraw() does each frame (see above).
+  // enabled no longer manages any listener — the coordinator's single
+  // shared listener stays active as long as ANY view is registered under
+  // that root, regardless of individual enabled state. This flag purely
+  // gates what onDraw() does each frame (see above).
 
   fun applyBlurEnabled(enabled: Boolean) {
     blurEnabled = enabled
     invalidate()
-  }
-
-  fun setAutoUpdate(update: Boolean) {
-    autoUpdate = update
   }
 
   // ── Root finder ───────────────────────────────────────────────────────────

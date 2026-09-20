@@ -85,9 +85,8 @@ using namespace facebook::react;
     [NSString stringWithUTF8String:p.reducedTransparencyFallbackColor.c_str()];
   _blurView.blurRadius  = @(p.blurRadius);
 
-  // enabled / autoUpdate
+  // enabled
   _blurView.enabled    = p.enabled  ? @YES : @NO;
-  _blurView.autoUpdate = p.autoUpdate ? @YES : @NO;
 
   // Progressive blur
   _blurView.progressiveBlurDirection =
